@@ -1,3 +1,12 @@
+# Apple junk
+*.DS_store */.DS_store
+
+# File type not to follow
+*.cdx
+*.gam
+*.gbz
+
+
 # Prerequisites
 *.d
 
