@@ -1,78 +1,90 @@
-# Apple junk
-*.DS_store */.DS_store
+# ==============================================================================
+# OS Generated Files
+# ==============================================================================
+# macOS
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
 
-# File type not to follow
-*.cdx
-*.gam
-*.gbz
+# ==============================================================================
+# IDE & Editor Directories (CLion / JetBrains)
+# ==============================================================================
+.idea/
+.vscode/
 
+# ==============================================================================
+# Build Directories & CMake Output
+# ==============================================================================
+# CLion default build directories
+cmake-build-*/
 
-# Prerequisites
-*.d
-
-# Compiled Object files
-*.slo
-*.lo
-*.o
-*.obj
-
-# Precompiled Headers
-*.gch
-*.pch
-
-# Linker files
-*.ilk
-
-# Debugger Files
-*.pdb
-
-# Compiled Dynamic libraries
-*.so
-*.dylib
-*.dll
-*.so.*
-
-
-# Fortran module files
-*.mod
-*.smod
-
-# Compiled Static libraries
-*.lai
-*.la
-*.a
-*.lib
-
-# Executables
-*.exe
-*.out
-*.app
-
-# Build directories
+# General CMake build directories
 build/
 Build/
-build-*/
-
-# CMake generated files
 CMakeFiles/
 CMakeCache.txt
 cmake_install.cmake
 Makefile
 install_manifest.txt
 compile_commands.json
+CTestTestfile.cmake
+Testing/
+.cache/
 
-# Temporary files
+# Package manager build outputs
+vcpkg_installed/
+
+# ==============================================================================
+# Binary & Compiled Artifacts
+# ==============================================================================
+# Executables & App bundles
+*.exe
+*.out
+*.app
+cdx_coverage
+
+# Object & Header files
+*.o
+*.obj
+*.lo
+*.slo
+*.gch
+*.pch
+*.d
+
+# Libraries & Linker outputs
+*.a
+*.lib
+*.so
+*.so.*
+*.dylib
+*.dll
+*.lai
+*.la
+*.ilk
+*.pdb
+*.dwo
+
+# Fortran
+*.mod
+*.smod
+
+# ==============================================================================
+# Project-Specific Genomic / Data Files
+# ==============================================================================
+*.cdx
+*.gam
+*.gbz
+
+# ==============================================================================
+# Temporary Files & Logs
+# ==============================================================================
 *.tmp
 *.log
 *.bak
 *.swp
-
-# vcpkg
-vcpkg_installed/
-
-# debug information files
-*.dwo
-
-# test output & cache
-Testing/
-.cache/
+*~
