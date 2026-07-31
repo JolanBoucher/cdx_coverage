@@ -27,6 +27,9 @@ find_package(PkgConfig REQUIRED)
 find_package(Protobuf REQUIRED)
 find_package(Threads REQUIRED)
 
+# Find Abseil (required by modern Protobuf on Homebrew / macOS)
+find_package(absl REQUIRED)
+
 # Homebrew installs libomp as a keg-only package on Apple Silicon / Intel macOS
 if(APPLE)
     if(EXISTS "/opt/homebrew/opt/libomp")
@@ -80,11 +83,11 @@ add_subdirectory(
         "${CMAKE_CURRENT_BINARY_DIR}/deps/libvgio"
 )
 
-# Re-enable find_package(Protobuf) for the rest of your project if needed
+# Re-enable find_package(Protobuf) for the rest of your project
 set(CMAKE_DISABLE_FIND_PACKAGE_Protobuf FALSE)
 
 # ---------------------------------------------------------------------------
-# Normalize the libvgio target name
+# Normalize the libvgio target name & link Abseil
 # ---------------------------------------------------------------------------
 if(TARGET VGio::VGio)
     set(CDX_VGIO_TARGET VGio::VGio)
@@ -98,11 +101,22 @@ endif()
 
 message(STATUS "Using libvgio target: ${CDX_VGIO_TARGET}")
 
+# Link Abseil components required by Protobuf into vgio
+target_link_libraries(${CDX_VGIO_TARGET} PRIVATE
+        absl::log_internal_message
+        absl::log_internal_check_op
+        absl::hash
+        absl::status
+        absl::raw_logging_internal
+)
+
 # ---------------------------------------------------------------------------
 # cdx_coverage executable
 # ---------------------------------------------------------------------------
 add_executable(cdx_coverage
         src/main.cpp
+        src/gam_io.cpp
+        src/gam_io.h
 )
 
 target_compile_features(cdx_coverage PRIVATE cxx_std_17)
@@ -114,6 +128,11 @@ target_include_directories(cdx_coverage PRIVATE
 target_link_libraries(cdx_coverage PRIVATE
         ${CDX_VGIO_TARGET}
         protobuf::libprotobuf
+        absl::log_internal_message
+        absl::log_internal_check_op
+        absl::hash
+        absl::status
+        absl::raw_logging_internal
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
