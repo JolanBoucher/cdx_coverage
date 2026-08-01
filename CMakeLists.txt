@@ -120,13 +120,23 @@ add_executable(cdx_coverage
         src/config.h
         src/cdx_loader.cpp
         src/cdx_loader.h
-        src/cdx_types.h
 )
 
 target_compile_features(cdx_coverage PRIVATE cxx_std_17)
 
 target_include_directories(cdx_coverage PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
+
+add_subdirectory(
+        ../cdx_shared
+        cdx_shared_build
+)
+
+target_link_libraries(
+        cdx_coverage
+        PRIVATE
+        cdx_shared
 )
 
 target_link_libraries(cdx_coverage PRIVATE
