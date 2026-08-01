@@ -120,6 +120,8 @@ add_executable(cdx_coverage
         src/config.h
         src/cdx_loader.cpp
         src/cdx_loader.h
+        src/cov_projection.cpp
+        src/cov_projection.h
 )
 
 target_compile_features(cdx_coverage PRIVATE cxx_std_17)
