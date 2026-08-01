@@ -117,6 +117,10 @@ add_executable(cdx_coverage
         src/main.cpp
         src/gam_io.cpp
         src/gam_io.h
+        src/config.h
+        src/cdx_loader.cpp
+        src/cdx_loader.h
+        src/cdx_types.h
 )
 
 target_compile_features(cdx_coverage PRIVATE cxx_std_17)
