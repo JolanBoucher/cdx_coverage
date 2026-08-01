@@ -21,7 +21,7 @@ namespace cdx {
     [[nodiscard]]QueryData loadQuery(
         const std::filesystem::path& cdx_path,
         std::size_t component_id,
-        std::optional<std::pair<PosBp,PosBp>> query_range = std::nullopt,
+        std::optional<std::pair<int64_t,int64_t>> query_range = std::nullopt,
         bool circular = false
     );
 

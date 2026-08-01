@@ -9,6 +9,8 @@
 #include "config.h"
 
 #include <fstream>
+#include <sstream>
+#include <iostream>
 #include <stdexcept>
 
 namespace {
@@ -639,8 +641,7 @@ namespace cdx {
      *
      * @throws std::runtime_error If the file cannot be opened or if underlying reader passes fail.
      */
-    [[nodiscard]]
-    GlobalData loadGlobal(const std::filesystem::path &cdx_path) {
+    [[nodiscard]] GlobalData loadGlobal(const std::filesystem::path &cdx_path) {
         GlobalData global_data;
 
         // 1. Open binary CDX stream and verify filesystem access
@@ -693,5 +694,81 @@ namespace cdx {
         }
 
         return global_data;
+    }
+
+    void inspectComponent(
+        const std::filesystem::path &cdx_path,
+        const std::optional<ComponentId> component_id
+    ) {
+        std::ifstream cdx_stream(cdx_path, std::ios::binary);
+
+        if (!cdx_stream) {
+            throw std::runtime_error("Unable to open CDX file: " + cdx_path.string());
+        }
+
+        const FileHeader header = readGlobalHeader(cdx_stream);
+        const auto component_count = header.n_components;
+
+        // Validate requested component.
+        if (component_id && *component_id >= component_count) {
+            throw std::out_of_range("Component " + std::to_string(*component_id) + " does not exist. "
+                                    "Valid range: [0-" + std::to_string(component_count - 1) + "].");
+        }
+
+        std::cout
+                << "=========================================================================\n"
+                << "CDX COMPONENT SUMMARY\n"
+                << "File: " + cdx_path.filename().string() + "\n"
+                << "=========================================================================\n\n";
+
+        std::cout << std::left << std::setw(12) << "Component" << std::right << std::setw(18) << "Length(bp)"
+                << std::setw(15) << "Nodes" << std::setw(25) << "NodeID Range" << '\n';
+
+        std::cout << std::string(73, '-') << '\n';
+
+        // Single-component inspection.
+        if (component_id) {
+            const auto component = seekComponent(cdx_stream, *component_id);
+            const auto records = readComponentPayload(cdx_stream, component.nb_nodes);
+            const auto idx2bp = buildIdx2Pos(records, component.nb_nodes);
+            const PosBp component_length = idx2bp.back();
+
+            std::ostringstream nid_range;
+
+            nid_range << component.nid_min << "-" << component.nid_max;
+            std::cout   << std::left << std::setw(12) << *component_id
+                        << std::right << std::setw(18) << component_length
+                        << std::setw(15) << component.nb_nodes
+                        << std::setw(25) << nid_range.str() << '\n';
+            return;
+        }
+
+        // Full inspection.
+        RecordCount total_nodes = 0;
+        PosBp total_length_bp = 0;
+
+        for (ComponentId compo_id = 0; compo_id < component_count; ++compo_id) {
+            const auto component = readComponentHeader(cdx_stream, compo_id);
+            const auto records = readComponentPayload(cdx_stream, component.nb_nodes);
+            const auto idx2bp = buildIdx2Pos(records, component.nb_nodes);
+            const PosBp component_length = idx2bp.back();
+
+            total_nodes += component.nb_nodes;
+            total_length_bp += component_length;
+
+            std::ostringstream nid_range;
+
+            nid_range << component.nid_min << "-" << component.nid_max;
+            std::cout   << std::left << std::setw(12) << compo_id
+                        << std::right << std::setw(18) << component_length
+                        << std::setw(15) << component.nb_nodes
+                        << std::setw(25) << nid_range.str() << '\n';
+        }
+
+        std::cout << std::string(73, '-') << '\n';
+        std::cout << std::left << std::setw(12) << "Total"
+                << std::right << std::setw(18) << total_length_bp
+                << std::setw(15) << total_nodes
+                << std::setw(25) << "-" << '\n';
     }
 }
