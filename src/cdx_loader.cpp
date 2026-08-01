@@ -4,8 +4,8 @@
 
 #include "cdx_loader.h"
 
-#include "cdx_types.h"
 #include "cdx_format.h"
+#include "cdx_IO.h"
 #include "config.h"
 
 #include <fstream>
@@ -14,28 +14,39 @@
 namespace {
     // this namespace for the private function used by loadQuery
 
-    std::vector<cdx::PosBp> buildIdx2Pos(
+    /**
+     * @brief Constructs the cumulative base-pair position prefix sum array from node records.
+     *
+     * @param records Collection of node records containing local topological indices and sequence lengths.
+     * @param node_count Total number of nodes in the component.
+     * @return std::vector<cdx::PosBp> Array of size (node_count + 1) mapping local indices to cumulative base-pair positions.
+     */
+    [[nodiscard]] std::vector<cdx::PosBp> buildIdx2Pos(
         const std::vector<cdx::NodeRecord> &records,
         const std::size_t node_count
     ) {
-        // initialize the output vector
+        // Allocate node_count + 1 entries initialized to zero (idx2bp[0] serves as origin 0)
         std::vector<cdx::PosBp> idx2bp(node_count + 1, 0);
 
-        // Placing the length in topological order
-        for (const auto &record: records) {
+        // Populate element sequence lengths offset by 1 to reserve index 0
+        for (const cdx::NodeRecord &record: records) {
 #ifndef NDEBUG
             if (record.idx >= node_count) {
-                throw std::runtime_error("Node record for " + std::to_string(record.node_id) + " out of bounds");
+                throw std::runtime_error(
+                    "Node record for node " + std::to_string(record.node_id) +
+                    " has an out-of-bounds local index " + std::to_string(record.idx) + "."
+                );
             }
 #endif
-            idx2bp[record.idx + 1] = record.seq_len;
-        }
 
-        // transform the topological order in cumulative position table
-        for (std::size_t idx = 1; idx < idx2bp.size(); ++idx){
+            idx2bp[static_cast<std::size_t>(record.idx) + 1] = record.seq_len;
+        }
+        // Convert individual sequence lengths into prefix sums (e.g., [10, 25, 15] -> [0, 10, 35, 50])
+        for (std::size_t idx = 1; idx < idx2bp.size(); ++idx) {
             idx2bp[idx] += idx2bp[idx - 1];
         }
-    };
+        return idx2bp;
+    }
 
     /**
      * @brief Builds a rank/select-like position index to map genomic base pairs (bp) to node indices in O(1) time.
@@ -74,7 +85,7 @@ namespace {
         const std::size_t word_count = (component_length_bp + WORD_MASK) >> WORD_SHIFT;
         index.bitvector.assign(word_count, 0);
 
-        // --- Mark every node start bit inside the bitvector ---
+        // --- Mark every node start a bit inside the bitvector ---
         for (std::size_t idx = 0; idx < node_count; ++idx) {
             const cdx::PosBp start_bp = idx2bp[idx];
             const std::size_t word_idx = start_bp >> WORD_SHIFT;
@@ -103,30 +114,30 @@ namespace {
      * @param component_id Identifier of the graph component being queried.
      * @param original_start Original signed start coordinate supplied by the user.
      * @param original_end Original signed end coordinate supplied by the user.
-     * @param start Resolved absolute start base pair position.
-     * @param end Resolved absolute end base pair position.
+     * @param resolved_start Resolved absolute start base pair position.
+     * @param resolved_end Resolved absolute end base pair position.
      * @return std::string Formatted error message string.
      */
     std::string formatOriginCrossingError(
         const std::size_t component_id,
-        const cdx::PosBp original_start,
-        const cdx::PosBp original_end,
-        const cdx::PosBp start,
-        const cdx::PosBp end
+        const std::int64_t original_start,
+        const std::int64_t original_end,
+        const cdx::PosBp resolved_start,
+        const cdx::PosBp resolved_end
     ) {
-        const cdx::PosBp linear_start = std::min(start, end);
-        const cdx::PosBp linear_end = std::max(start, end);
+        const cdx::PosBp linear_start = std::min(resolved_start, resolved_end);
+        const cdx::PosBp linear_end = std::max(resolved_start, resolved_end);
 
-        return (
-            "Query " + std::to_string(component_id) + ":" + std::to_string(original_start) + "-" +
-            std::to_string(original_end) + " resolves to " + std::to_string(start) + "-" + std::to_string(end)
-            + " and crosses the component origin.\n\n" +
+        return "Query " + std::to_string(component_id) + ":" + std::to_string(original_start) + "-" +
+               std::to_string(original_end) + " resolves to " + std::to_string(resolved_start) + "-" + std::to_string(
+                   resolved_end)
+               + " and crosses the component origin.\n\n" +
 
-            "If this component is circular, rerun with:\n  --component-type circular\n\n" +
+               "If this component is circular, rerun with:\n  --component-type circular\n\n" +
 
-            "If you intended the linear interval between both positions, use:\n" +
-            "  " + std::to_string(component_id) + ":" + std::to_string(linear_start) + "-" + std::to_string(linear_end)
-        );
+               "If you intended the linear interval between both positions, use:\n" +
+               "  " + std::to_string(component_id) + ":" + std::to_string(linear_start) + "-" + std::to_string(
+                   linear_end);
     }
 
 
@@ -162,15 +173,15 @@ namespace {
         const auto [original_start, original_end] = *query_range;
 
         // Normalize negative coordinates by wrapping them around the component length (Option B behavior)
-        const std::int64_t resolved_start = (original_start < 0)
+        const std::int64_t resolved_start = original_start < 0
                                                 ? original_start + static_cast<std::int64_t>(component_length)
                                                 : original_start;
 
-        const std::int64_t resolved_end = (original_end < 0)
+        const std::int64_t resolved_end = original_end < 0
                                               ? original_end + static_cast<std::int64_t>(component_length)
                                               : original_end;
 
-        // Validate that resolved boundaries fit strictly within component coordinate space
+        // Validate that both resolved coordinates lie inside the component.
         if (resolved_start < 0 || resolved_start >= static_cast<std::int64_t>(component_length)) {
             throw std::out_of_range("Query start coordinate out of bounds.");
         }
@@ -179,22 +190,27 @@ namespace {
             throw std::out_of_range("Query end coordinate out of bounds.");
         }
 
-        const auto query_start = static_cast<cdx::PosBp>(resolved_start);
-        const auto query_end = static_cast<cdx::PosBp>(resolved_end);
-
-        // Check if the coordinate range wraps around the graph origin (start > end)
-        const bool crosses_origin = query_start > query_end;
+        // A start greater than the end represents an interval wrapping
+        // around the origin of a circular component.
+        const bool crosses_origin = resolved_start > resolved_end;
 
         if (crosses_origin && !circular) {
-            throw std::invalid_argument(formatOriginCrossingError(
-                component_id,
-                original_start,
-                original_end,
-                query_start,
-                query_end));
+            throw std::invalid_argument(
+                formatOriginCrossingError(
+                    component_id,
+                    original_start,
+                    original_end,
+                    static_cast<cdx::PosBp>(resolved_start),
+                    static_cast<cdx::PosBp>(resolved_end)
+                )
+            );
         }
+
+        // The validation above guarantees that these signed values are
+        // non-negative and safely representable as PosBp.
         return {
-            query_start, query_end
+            static_cast<cdx::PosBp>(resolved_start),
+            static_cast<cdx::PosBp>(resolved_end)
         };
     }
 
@@ -220,7 +236,7 @@ namespace {
         const std::size_t bit_idx = bp & WORD_MASK;
 
         // Guard against undefined behavior (1ULL << 64) when bit_idx reaches 63
-        const std::uint64_t mask = (bit_idx == 63) ? UINT64_MAX : ((1ULL << (bit_idx + 1)) - 1ULL);
+        const std::uint64_t mask = bit_idx == 63 ? UINT64_MAX : (1ULL << (bit_idx + 1)) - 1ULL;
 
         // Rank equals the number of node starts up to and including bp
         const std::uint32_t rank = index.rank_index[word_idx] +
@@ -274,7 +290,7 @@ namespace {
         const std::size_t component_size = nid_max - nid_min + 1;
 
         // Initialize the lookup table with the default 'not in component' sentinel value
-        std::vector<cdx::Idx> nid2idx(component_size, cfg::NOT_IN_COMPO);
+        std::vector nid2idx(component_size, cfg::NOT_IN_COMPO);
 
         // Populate the dense array using direct offset indexing for O(1) lookups
         for (const auto &record: records) {
@@ -316,7 +332,7 @@ namespace {
         const std::size_t component_size = nid_max - nid_min + 1;
 
         // Initialize the lookup table with the default 'not in component' sentinel value
-        std::vector<cdx::Coverage> cov_table(component_size, cfg::NOT_IN_COMPO);
+        std::vector cov_table(component_size, cfg::NOT_IN_COMPO);
 
         const auto [query_start, query_end] = query_range_idx;
 
@@ -336,8 +352,8 @@ namespace {
 
             // Evaluate topological index membership based on query topology (handling circular wrap-around if needed)
             const bool in_query = crosses_origin
-                                      ? (record.idx >= query_start || record.idx <= query_end)
-                                      : (record.idx >= query_start && record.idx <= query_end);
+                                      ? record.idx >= query_start || record.idx <= query_end
+                                      : record.idx >= query_start && record.idx <= query_end;
 
             // Mark active query nodes with 0, and out-of-query component nodes with sentinels
             cov_table[node_offset] = in_query ? 0 : cfg::NOT_IN_QUERY;
@@ -375,10 +391,10 @@ namespace cdx {
         }
 
         // 2. Locate component boundaries and metadata
-        query_data.component = cdx::seekComponent(cdx_stream, component_id);
+        query_data.component = seekComponent(cdx_stream, component_id);
 
         // 3. Read node records payload from the binary stream
-        std::vector<cdx::NodeRecord> records = cdx::readComponentPayload(
+        std::vector<NodeRecord> records = readComponentPayload(
             cdx_stream,
             query_data.component.nb_nodes
         );
@@ -390,7 +406,7 @@ namespace cdx {
             throw std::runtime_error("Component contains no nodes.");
         }
 
-        const cdx::PosBp component_length = query_data.getComponentLength();
+        const PosBp component_length = query_data.getComponentLength();
 
         // 5. Resolve and project user query boundaries or default to full component span
         if (query_range) {
@@ -431,4 +447,251 @@ namespace cdx {
     }
 }
 
-//TODO ajouté et complété cdx_io à cdx_lib (anciennement shared_cdx)
+namespace {
+    // this namespace used for private functions of loadGlobal
+
+    [[nodiscard]] cdx::GraphLayout computeGraphLayout(std::istream &cdx
+    ) {
+        cdx.clear();
+        cdx.seekg(0, std::ios::beg);
+        if (!cdx) {
+            throw std::runtime_error("Unable to seek to beginning of CDX stream.");
+        }
+
+        const cdx::FileHeader file_header = cdx::readGlobalHeader(cdx);
+        cdx::GraphLayout layout;
+
+        layout.component_count = file_header.n_components;
+        bool first_component = true;
+
+        layout.component_offsets.reserve(static_cast<std::size_t>(file_header.n_components) + 1);
+        layout.component_offsets.push_back(0);
+
+        for (cdx::ComponentId component_id = 0;
+             component_id < file_header.n_components;
+             ++component_id) {
+            const cdx::ComponentType component = cdx::readComponentHeader(cdx, component_id);
+
+            if (component.nb_nodes == 0) {
+                throw std::runtime_error("Component " + std::to_string(component_id) + " contains zero records.");
+            }
+
+            if (first_component) {
+                layout.graph_nid_min = component.nid_min;
+                layout.graph_nid_max = component.nid_max;
+                first_component = false;
+            } else {
+                layout.graph_nid_min = std::min(layout.graph_nid_min, component.nid_min);
+                layout.graph_nid_max = std::max(layout.graph_nid_max, component.nid_max);
+            }
+
+            layout.total_nodes += component.nb_nodes;
+            layout.component_offsets.push_back(layout.total_nodes);
+            cdx.seekg(component.payload_size, std::ios::cur);
+
+            if (!cdx) {
+                throw std::runtime_error("Unable to skip payload of component " + std::to_string(component_id));
+            }
+        }
+        return layout;
+    }
+
+    [[nodiscard]] std::vector<cdx::FlatIdx> buildNid2FlatIdxGlobal(
+        std::istream &cdx,
+        const cdx::Nid graph_nid_min,
+        const cdx::Nid graph_nid_max,
+        const std::vector<cdx::RecordCount> &component_offsets
+    ) {
+        const std::size_t component_count = component_offsets.size() - 1;
+        const std::size_t graph_nid_range = graph_nid_max - graph_nid_min + 1;
+
+        // Initialize a dense nid-space lookup
+        std::vector nid2flat_idx(graph_nid_range, cfg::INVALID_FLAT_IDX);
+
+        // Reset stream
+        cdx.clear();
+        cdx.seekg(0, std::ios::beg);
+
+        if (!cdx) {
+            throw std::runtime_error("Unable to seek to beginning of CDX stream.");
+        }
+
+        cdx::readGlobalHeader(cdx); // we just use to place the cursor after the global header
+
+        // Process all components sequentially
+        for (cdx::ComponentId component_id = 0; component_id < component_count; ++component_id) {
+            const cdx::ComponentType component = cdx::readComponentHeader(cdx, component_id);
+            const auto records = cdx::readComponentPayload(cdx, component.nb_nodes);
+            const auto component_offset = static_cast<cdx::FlatIdx>(component_offsets[component_id]);
+
+            for (const auto &record: records) {
+                const std::size_t node_offset = record.node_id - graph_nid_min;
+#ifndef NDEBUG
+                if (record.node_id < graph_nid_min || record.node_id > graph_nid_max) {
+                    throw std::runtime_error("Node ID outside graph bounds.");
+                }
+#endif
+                nid2flat_idx[node_offset] = component_offset + static_cast<cdx::FlatIdx>(record.idx);
+            }
+        }
+
+        return nid2flat_idx;
+    }
+
+    [[nodiscard]] std::vector<cdx::Coverage> buildCovTableGlobal(
+        const std::vector<cdx::FlatIdx> &nid2flat_idx
+    ) {
+        // initialize global cov_table
+        std::vector cov_table(nid2flat_idx.size(), cfg::NOT_IN_COMPO);
+        for (std::size_t node_offset = 0; node_offset < nid2flat_idx.size(); ++node_offset) {
+            // initialize the vector valid slots
+            if (nid2flat_idx[node_offset] != cfg::INVALID_FLAT_IDX) {
+                cov_table[node_offset] = 0;
+            }
+        }
+        return cov_table;
+    }
+
+
+    /**
+     * @brief Builds a global concatenated idx2pos map across all components in a CDX stream.
+     *
+     * Resets the input stream, verifies the global header, and constructs contiguous local position
+     * prefix-sum tables while recording component start/end boundary indices inside the array.
+     *
+     * @param input Open seekable binary CDX stream.
+     * @param component_count Total expected number of components to process.
+     *
+     * @return std::pair<std::vector<PosBp>, std::vector<Idx>>
+     *         - first:  Concatenated prefix-sum arrays across all processed components.
+     *         - second: Boundary element indices in idx2pos for each component (size component_count + 1).
+     *
+     * @throws std::runtime_error If stream seeking or payload reading fails.
+     * @throws std::out_of_range If requested component_count exceeds archive contents.
+     */
+    [[nodiscard]] std::pair<std::vector<cdx::PosBp>, std::vector<cdx::Idx> > buildIdx2PosGlobal(
+        std::istream &input,
+        cdx::ComponentId component_count
+    ) {
+        // 1. Reset stream to origin and validate global header
+        input.clear();
+        input.seekg(0, std::ios::beg);
+
+        if (!input) {
+            throw std::runtime_error("Unable to seek to beginning of CDX stream.");
+        }
+
+        const cdx::FileHeader global_header = cdx::readGlobalHeader(input);
+        if (component_count > global_header.n_components) {
+            throw std::out_of_range("Requested component count (" + std::to_string(component_count) +
+                                    ") exceeds archive capacity (" + std::to_string(global_header.n_components) + ").");
+        }
+
+        std::vector<cdx::PosBp> idx2pos;
+        std::vector<cdx::Idx> idx2pos_offsets;
+        idx2pos_offsets.reserve(static_cast<std::size_t>(component_count) + 1);
+        idx2pos_offsets.push_back(0);
+
+        // 2. Pass 1: compute exact element count to pre-allocate memory
+        const std::streampos payload_start_pos = input.tellg();
+        std::size_t total_elements = 0;
+
+        for (cdx::ComponentId id = 0; id < component_count; ++id) {
+            const cdx::ComponentType comp_info = cdx::readComponentHeader(input, id);
+            total_elements += static_cast<std::size_t>(comp_info.nb_nodes) + 1;
+            input.seekg(comp_info.payload_size, std::ios::cur);
+        }
+
+        idx2pos.reserve(total_elements);
+
+        // 3. Pass 2: rewind to headers and populate payload data
+        input.clear();
+        input.seekg(payload_start_pos, std::ios::beg);
+
+        for (cdx::ComponentId id = 0; id < component_count; ++id) {
+            const cdx::ComponentType component = cdx::readComponentHeader(input, id);
+            std::vector<cdx::NodeRecord> records;
+            records = cdx::readComponentPayload(input, component.nb_nodes);
+
+            const std::vector<cdx::PosBp> comp_idx2pos = buildIdx2Pos(records, component.nb_nodes);
+
+            // Append component-local prefix sums into the contiguous vector
+            idx2pos.insert(idx2pos.end(), comp_idx2pos.begin(), comp_idx2pos.end());
+
+            // Store exclusive end boundary in index space
+            idx2pos_offsets.push_back(static_cast<cdx::Idx>(idx2pos.size()));
+        }
+
+        return {std::move(idx2pos), std::move(idx2pos_offsets)};
+    }
+} // end private function supporting loadGlobal()
+
+namespace cdx {
+    /**
+     * @brief Loads and initializes global pangenome graph metadata, coordinate lookup tables,
+     *        and dense coverage structures from a binary CDX archive.
+     *
+     * Performs stream validation, parses total layout bounds, builds global node-ID to flat index mappings,
+     * constructs position prefix-sum arrays, and derives per-component base-pair lengths.
+     *
+     * @param cdx_path Filesystem path to the target uncompressed binary CDX file.
+     * @return GlobalData Fully populated global lookup tables and graph layout metadata.
+     *
+     * @throws std::runtime_error If the file cannot be opened or if underlying reader passes fail.
+     */
+    [[nodiscard]]
+    GlobalData loadGlobal(const std::filesystem::path &cdx_path) {
+        GlobalData global_data;
+
+        // 1. Open binary CDX stream and verify filesystem access
+        std::ifstream cdx_stream(cdx_path, std::ios::binary);
+        if (!cdx_stream) {
+            throw std::runtime_error("Unable to open CDX file: " + cdx_path.string());
+        }
+
+        // 2. Extract global graph metadata and component layout bounds
+        const GraphLayout layout = computeGraphLayout(cdx_stream);
+
+        global_data.layout.graph_nid_min = layout.graph_nid_min;
+        global_data.layout.graph_nid_max = layout.graph_nid_max;
+        global_data.layout.total_nodes = layout.total_nodes;
+        global_data.layout.component_offsets = layout.component_offsets;
+
+        // 3. Build global dense node-ID to flat-index translation map
+        global_data.nid2flat_idx = buildNid2FlatIdxGlobal(
+            cdx_stream,
+            layout.graph_nid_min,
+            layout.graph_nid_max,
+            layout.component_offsets
+        );
+
+        // 4. Initialize dense global coverage table
+        global_data.node_coverage = buildCovTableGlobal(global_data.nid2flat_idx);
+
+        // 5. Build global position prefix-sum array and component element offsets
+        auto [idx2bp, idx2bp_offsets] = buildIdx2PosGlobal(
+            cdx_stream,
+            layout.component_count
+        );
+
+        global_data.idx2bp = std::move(idx2bp);
+
+        // 6. Extract total base-pair length for each component from prefix-sum boundaries
+        const std::size_t num_components = !idx2bp_offsets.empty() ? idx2bp_offsets.size() - 1 : 0;
+
+        global_data.component_lengths.reserve(num_components);
+
+        for (std::size_t comp_id = 0; comp_id < num_components; ++comp_id) {
+            const auto end_idx = idx2bp_offsets[comp_id + 1];
+
+            if (end_idx == 0) {
+                global_data.component_lengths.push_back(0);
+            } else {
+                // The last entry of each local prefix-sum table stores total component length
+                global_data.component_lengths.push_back(global_data.idx2bp[end_idx - 1]);
+            }
+        }
+
+        return global_data;
+    }
+}

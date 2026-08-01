@@ -129,14 +129,14 @@ target_include_directories(cdx_coverage PRIVATE
 )
 
 add_subdirectory(
-        ../cdx_shared
-        cdx_shared_build
+        ../cdx_lib
+        cdx_lib_build
 )
 
 target_link_libraries(
         cdx_coverage
         PRIVATE
-        cdx_shared
+        cdx_lib
 )
 
 target_link_libraries(cdx_coverage PRIVATE
