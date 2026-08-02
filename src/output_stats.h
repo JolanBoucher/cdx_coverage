@@ -37,13 +37,14 @@ namespace output {
         const std::filesystem::path& output_txt,
         const std::map<std::string, std::uint64_t>& mapping,
         const std::vector<cdx::Coverage>& coverage,
-        const std::string& component
+        const std::string& component_name
     );
 
     void writeStatsReportGlobal(
         const std::filesystem::path& output_txt,
         const std::vector<cdx::Coverage>& flat_bp_cov_table,
         const std::vector<cdx::PosBp>& bp_component_offsets,
+        const std::vector<std::string>& component_names,
         const std::map<std::string, std::uint64_t>* mapping_stats = nullptr
     );
 
