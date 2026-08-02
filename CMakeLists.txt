@@ -124,6 +124,8 @@ add_executable(cdx_coverage
         src/cov_projection.h
         src/output_stats.cpp
         src/output_stats.h
+        src/output_coverage.cpp
+        src/output_coverage.h
 )
 
 target_compile_features(cdx_coverage PRIVATE cxx_std_17)
