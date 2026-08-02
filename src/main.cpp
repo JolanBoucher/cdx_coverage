@@ -20,39 +20,12 @@
 
 namespace {
 
-    class ScopedTimer {
-    public:
-        explicit ScopedTimer(std::string name)
-            : name_(std::move(name)),
-              start_(std::chrono::steady_clock::now()) {}
-
-        ~ScopedTimer() {
-            const auto end = std::chrono::steady_clock::now();
-
-            const double seconds =
-                std::chrono::duration<double>(
-                    end - start_
-                ).count();
-
-            std::cout
-                << "[TIME] "
-                << name_
-                << ": "
-                << seconds
-                << " s\n";
-        }
-
-    private:
-        std::string name_;
-        std::chrono::steady_clock::time_point start_;
-    };
-
 // ================================================================
 // MANUAL CONFIGURATION
 // ================================================================
 
-const std::filesystem::path CDX_PATH = "./bio-file/messy.cdx";
-const std::filesystem::path GAM_PATH = "./bio-file/messy.gam";
+const std::filesystem::path CDX_PATH = "./bio-file/yeast.cdx";
+const std::filesystem::path GAM_PATH = "./bio-file/yeast_tiny.gam";
 const std::filesystem::path OUTPUT_DIRECTORY = "./output";
 
 // Set to std::nullopt for whole-graph mode.
@@ -147,18 +120,18 @@ std::vector<std::uint32_t> processGam(
 void runGlobalPipeline(MappingStats& mapping_stats) {
     cdx::GlobalData data;
     {
-        ScopedTimer timer("loadGlobal");
+        cfg::ScopedTimer timer("loadGlobal");
         data = cdx::loadGlobal(CDX_PATH);
     }
 
     std::vector<std::uint32_t> gam_coverage;
     {
-        ScopedTimer timer("processGam");
+        cfg::ScopedTimer timer("processGam");
         gam_coverage = processGam(data.layout.graph_nid_max, mapping_stats);
     }
 
     {
-        ScopedTimer timer("transferGamCoverage");
+        cfg::ScopedTimer timer("transferGamCoverage");
         transferGamCoverage(
             gam_coverage,
             data.layout.graph_nid_min,
@@ -168,7 +141,7 @@ void runGlobalPipeline(MappingStats& mapping_stats) {
 
     std::vector<cdx::Coverage> flat_idx_coverage;
     {
-        ScopedTimer timer("projectCov2IdxGlobal");
+        cfg::ScopedTimer timer("projectCov2IdxGlobal");
         flat_idx_coverage = projectCov2IdxGlobal(
             data.node_coverage,
             data.nid2flat_idx,
@@ -179,7 +152,7 @@ void runGlobalPipeline(MappingStats& mapping_stats) {
     std::vector<cdx::Coverage> flat_bp_coverage;
     std::vector<cdx::PosBp> bp_component_offsets;
     {
-        ScopedTimer timer("expandPosCovGlobal");
+        cfg::ScopedTimer timer("expandPosCovGlobal");
         std::tie(flat_bp_coverage, bp_component_offsets) = expandPosCovGlobal(
             flat_idx_coverage,
             data.layout.component_offsets,
@@ -189,7 +162,7 @@ void runGlobalPipeline(MappingStats& mapping_stats) {
     }
 
     {
-        ScopedTimer timer("writeCoverageTsvGlobal");
+        cfg::ScopedTimer timer("writeCoverageTsvGlobal");
         output::writeCoverageTsvGlobal(
             TSV_OUTPUT,
             flat_bp_coverage,
@@ -199,7 +172,7 @@ void runGlobalPipeline(MappingStats& mapping_stats) {
     }
 
     {
-        ScopedTimer timer("writeStatsReportGlobal");
+        cfg::ScopedTimer timer("writeStatsReportGlobal");
         output::writeStatsReportGlobal(
             STATS_OUTPUT,
             flat_bp_coverage,
@@ -219,7 +192,7 @@ void runQueryPipeline(MappingStats& mapping_stats) {
 
     cdx::QueryData data;
     {
-        ScopedTimer timer("loadQuery");
+        cfg::ScopedTimer timer("loadQuery");
         data = cdx::loadQuery(
             CDX_PATH,
             *COMPONENT_ID,
@@ -230,12 +203,12 @@ void runQueryPipeline(MappingStats& mapping_stats) {
 
     std::vector<std::uint32_t> gam_coverage;
     {
-        ScopedTimer timer("processGam");
+        cfg::ScopedTimer timer("processGam");
         gam_coverage = processGam(data.component.nid_max, mapping_stats);
     }
 
     {
-        ScopedTimer timer("transferGamCoverage");
+        cfg::ScopedTimer timer("transferGamCoverage");
         transferGamCoverage(
             gam_coverage,
             data.component.nid_min,
@@ -245,7 +218,7 @@ void runQueryPipeline(MappingStats& mapping_stats) {
 
     std::vector<cdx::Coverage> idx_coverage;
     {
-        ScopedTimer timer("projectCov2IdxQuery");
+        cfg::ScopedTimer timer("projectCov2IdxQuery");
         idx_coverage = projectCov2IdxQuery(
             data.node_coverage,
             data.nid2idx,
@@ -255,7 +228,7 @@ void runQueryPipeline(MappingStats& mapping_stats) {
 
     std::vector<cdx::Coverage> bp_coverage;
     {
-        ScopedTimer timer("expandPosCovQuery");
+        cfg::ScopedTimer timer("expandPosCovQuery");
         bp_coverage = expandPosCovQuery(
             idx_coverage,
             data.idx2bp
@@ -263,7 +236,7 @@ void runQueryPipeline(MappingStats& mapping_stats) {
     }
 
     {
-        ScopedTimer timer("trimCoverageToQuery");
+        cfg::ScopedTimer timer("trimCoverageToQuery");
         bp_coverage = trimCoverageToQuery(
             bp_coverage,
             data.query_range_bp
@@ -271,7 +244,7 @@ void runQueryPipeline(MappingStats& mapping_stats) {
     }
 
     {
-        ScopedTimer timer("writeCoverageTsvQuery");
+        cfg::ScopedTimer timer("writeCoverageTsvQuery");
         output::writeCoverageTsvQuery(
             TSV_OUTPUT,
             bp_coverage,
@@ -280,7 +253,7 @@ void runQueryPipeline(MappingStats& mapping_stats) {
     }
 
     {
-        ScopedTimer timer("writeStatsReportQuery");
+        cfg::ScopedTimer timer("writeStatsReportQuery");
         output::writeStatsReportQuery(
             STATS_OUTPUT,
             mapping_stats,
@@ -294,7 +267,7 @@ void runQueryPipeline(MappingStats& mapping_stats) {
 
 int main() {
     try {
-        ScopedTimer total_timer("TOTAL PROGRAM");
+        cfg::ScopedTimer total_timer("TOTAL PROGRAM");
 
         std::filesystem::create_directories(
             OUTPUT_DIRECTORY
@@ -341,3 +314,9 @@ int main() {
         return 1;
     }
 }
+
+//TODO optimisation de output_tsv et de output_stats qui sont
+// pas très performant pour l'instant. mangent (30 à 50%) du temps en release plus autour de 65% en debug
+// on peut tenté de parallélisé tsv, mais faut voir ou est le goulot en cpu ou en IO avant sinon ya bcp d'autre tour
+// de passe-passe pour optimisé avant
+// le stats va être un peut plus de modifier l'algo je crois peut-être potentiel de parallelization

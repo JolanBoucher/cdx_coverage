@@ -3,6 +3,7 @@
 #define CDX_COVERAGE_CONFIG_H
 
 #include <cstdint>
+#include <iostream>
 #include <string_view>
 
 namespace cfg {
@@ -17,5 +18,21 @@ namespace cfg {
     inline constexpr std:: string_view NAME_STATS_FILE = "coverage_stats";
     inline constexpr std::string_view NAME_GRAPH_FILE = "coverage_graph";
 
+    class ScopedTimer {
+    public:
+        explicit ScopedTimer(std::string name)
+            : name_(std::move(name)),
+              start_(std::chrono::steady_clock::now()) {}
+
+        ~ScopedTimer() {
+            const auto end = std::chrono::steady_clock::now();
+            const double seconds = std::chrono::duration<double>(end - start_).count();
+            std::cout << "[TIME] " << name_ << ": " << seconds << " s\n";
+        }
+
+    private:
+        std::string name_;
+        std::chrono::steady_clock::time_point start_;
+    };
 }
 #endif //CDX_COVERAGE_CONFIG_H
