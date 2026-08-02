@@ -452,10 +452,13 @@ namespace cdx {
 namespace {
     // this namespace used for private functions of loadGlobal
 
-    [[nodiscard]] cdx::GraphLayout computeGraphLayout(std::istream &cdx
+    [[nodiscard]]
+    cdx::GraphLayout computeGraphLayout(
+        std::istream &cdx
     ) {
         cdx.clear();
         cdx.seekg(0, std::ios::beg);
+
         if (!cdx) {
             throw std::runtime_error("Unable to seek to beginning of CDX stream.");
         }
@@ -463,20 +466,20 @@ namespace {
         const cdx::FileHeader file_header = cdx::readGlobalHeader(cdx);
         cdx::GraphLayout layout;
 
-        layout.component_count = file_header.n_components;
+        layout.component_count = static_cast<std::size_t>(file_header.n_components);
+        layout.component_offsets.reserve(layout.component_count + 1);
+        layout.component_names.reserve(layout.component_count);
+        layout.component_offsets.push_back(0);
         bool first_component = true;
 
-        layout.component_offsets.reserve(static_cast<std::size_t>(file_header.n_components) + 1);
-        layout.component_offsets.push_back(0);
-
-        for (cdx::ComponentId component_id = 0;
-             component_id < file_header.n_components;
-             ++component_id) {
-            const cdx::ComponentType component = cdx::readComponentHeader(cdx, component_id);
-
+        for (cdx::Cid cid = 0; cid < file_header.n_components; ++cid) {
+            const cdx::ComponentInfo component = cdx::readComponentHeader(cdx, cid);
             if (component.nb_nodes == 0) {
-                throw std::runtime_error("Component " + std::to_string(component_id) + " contains zero records.");
+                throw std::runtime_error("Component " + std::to_string(cid) + " contains zero records.");
             }
+
+            // Preserve the component name returned by readComponentHeader().
+            layout.component_names.push_back(component.compo_name);
 
             if (first_component) {
                 layout.graph_nid_min = component.nid_min;
@@ -489,12 +492,18 @@ namespace {
 
             layout.total_nodes += component.nb_nodes;
             layout.component_offsets.push_back(layout.total_nodes);
-            cdx.seekg(component.payload_size, std::ios::cur);
 
+            /*
+             * readComponentHeader() has consumed the fixed header and
+             * the variable-length component name. The stream is now at
+             * the beginning of the NodeRecord payload.
+             */
+            cdx.seekg(component.payload_size, std::ios::cur);
             if (!cdx) {
-                throw std::runtime_error("Unable to skip payload of component " + std::to_string(component_id));
+                throw std::runtime_error("Unable to skip payload of component " + std::to_string(cid));
             }
         }
+
         return layout;
     }
 
@@ -521,8 +530,8 @@ namespace {
         cdx::readGlobalHeader(cdx); // we just use to place the cursor after the global header
 
         // Process all components sequentially
-        for (cdx::ComponentId component_id = 0; component_id < component_count; ++component_id) {
-            const cdx::ComponentType component = cdx::readComponentHeader(cdx, component_id);
+        for (cdx::Cid component_id = 0; component_id < component_count; ++component_id) {
+            const cdx::ComponentInfo component = cdx::readComponentHeader(cdx, component_id);
             const auto records = cdx::readComponentPayload(cdx, component.nb_nodes);
             const auto component_offset = static_cast<cdx::FlatIdx>(component_offsets[component_id]);
 
@@ -573,7 +582,7 @@ namespace {
      */
     [[nodiscard]] std::pair<std::vector<cdx::PosBp>, std::vector<cdx::Idx> > buildIdx2PosGlobal(
         std::istream &input,
-        cdx::ComponentId component_count
+        cdx::Cid component_count
     ) {
         // 1. Reset stream to origin and validate global header
         input.clear();
@@ -598,8 +607,8 @@ namespace {
         const std::streampos payload_start_pos = input.tellg();
         std::size_t total_elements = 0;
 
-        for (cdx::ComponentId id = 0; id < component_count; ++id) {
-            const cdx::ComponentType comp_info = cdx::readComponentHeader(input, id);
+        for (cdx::Cid id = 0; id < component_count; ++id) {
+            const cdx::ComponentInfo comp_info = cdx::readComponentHeader(input, id);
             total_elements += static_cast<std::size_t>(comp_info.nb_nodes) + 1;
             input.seekg(comp_info.payload_size, std::ios::cur);
         }
@@ -610,8 +619,8 @@ namespace {
         input.clear();
         input.seekg(payload_start_pos, std::ios::beg);
 
-        for (cdx::ComponentId id = 0; id < component_count; ++id) {
-            const cdx::ComponentType component = cdx::readComponentHeader(input, id);
+        for (cdx::Cid id = 0; id < component_count; ++id) {
+            const cdx::ComponentInfo component = cdx::readComponentHeader(input, id);
             std::vector<cdx::NodeRecord> records;
             records = cdx::readComponentPayload(input, component.nb_nodes);
 
@@ -644,61 +653,74 @@ namespace cdx {
     [[nodiscard]] GlobalData loadGlobal(const std::filesystem::path &cdx_path) {
         GlobalData global_data;
 
-        // 1. Open binary CDX stream and verify filesystem access
+        // 1. Open the binary CDX stream.
         std::ifstream cdx_stream(cdx_path, std::ios::binary);
+
         if (!cdx_stream) {
             throw std::runtime_error("Unable to open CDX file: " + cdx_path.string());
         }
 
-        // 2. Extract global graph metadata and component layout bounds
-        const GraphLayout layout = computeGraphLayout(cdx_stream);
+        // 2. Extract graph-wide metadata, component boundaries,
+        //    and component names.
+        GraphLayout layout = computeGraphLayout(cdx_stream);
 
-        global_data.layout.graph_nid_min = layout.graph_nid_min;
-        global_data.layout.graph_nid_max = layout.graph_nid_max;
-        global_data.layout.total_nodes = layout.total_nodes;
-        global_data.layout.component_offsets = layout.component_offsets;
+        // 3. Build the dense node-ID to flat-index translation table.
+        global_data.nid2flat_idx =
+                buildNid2FlatIdxGlobal(
+                    cdx_stream,
+                    layout.graph_nid_min,
+                    layout.graph_nid_max,
+                    layout.component_offsets
+                );
 
-        // 3. Build global dense node-ID to flat-index translation map
-        global_data.nid2flat_idx = buildNid2FlatIdxGlobal(
-            cdx_stream,
-            layout.graph_nid_min,
-            layout.graph_nid_max,
-            layout.component_offsets
-        );
-
-        // 4. Initialize dense global coverage table
+        // 4. Initialize the global coverage table in relative nid-space.
         global_data.node_coverage = buildCovTableGlobal(global_data.nid2flat_idx);
 
-        // 5. Build global position prefix-sum array and component element offsets
-        auto [idx2bp, idx2bp_offsets] = buildIdx2PosGlobal(
-            cdx_stream,
-            layout.component_count
-        );
-
+        // 5. Build concatenated component-local idx-to-bp tables.
+        auto [idx2bp, idx2bp_offsets] =
+                buildIdx2PosGlobal(cdx_stream, static_cast<Cid>(layout.component_count));
         global_data.idx2bp = std::move(idx2bp);
 
-        // 6. Extract total base-pair length for each component from prefix-sum boundaries
-        const std::size_t num_components = !idx2bp_offsets.empty() ? idx2bp_offsets.size() - 1 : 0;
-
-        global_data.component_lengths.reserve(num_components);
-
-        for (std::size_t comp_id = 0; comp_id < num_components; ++comp_id) {
-            const auto end_idx = idx2bp_offsets[comp_id + 1];
-
-            if (end_idx == 0) {
-                global_data.component_lengths.push_back(0);
-            } else {
-                // The last entry of each local prefix-sum table stores total component length
-                global_data.component_lengths.push_back(global_data.idx2bp[end_idx - 1]);
-            }
+        // 6. Extract each component's total bp length.
+        if (idx2bp_offsets.size() != layout.component_count + 1) {
+            throw std::runtime_error("idx2bp offset count does not match the number of CDX components.");
         }
 
+        global_data.component_lengths.reserve(layout.component_count);
+
+        for (std::size_t cid = 0; cid < layout.component_count; ++cid) {
+            const auto end_offset = idx2bp_offsets[cid + 1];
+
+            if (end_offset == 0) {
+                throw std::runtime_error(
+                    "Component " + std::to_string(cid) + " has an invalid empty idx2bp table.");
+            }
+            if (end_offset > static_cast<RecordCount>(global_data.idx2bp.size())) {
+                throw std::out_of_range("Component idx2bp boundary exceeds the concatenated position table.");
+            }
+            const std::size_t end_index = end_offset;
+
+            // The last element of each local prefix-sum table
+            // stores the total component length.
+            global_data.component_lengths.push_back(global_data.idx2bp[end_index - 1]);
+        }
+
+        // 7. Preserve the complete graph metadata, including:
+        //    component_count, component_offsets, and component_names.
+        if (layout.component_names.size() != layout.component_count) {
+            throw std::runtime_error("Component name count does not match the number of CDX components.");
+        }
+        if (global_data.component_lengths.size() != layout.component_count) {
+            throw std::logic_error("Component length count does not match the number of CDX components.");
+        }
+
+        global_data.layout = std::move(layout);
         return global_data;
     }
 
     void inspectComponent(
         const std::filesystem::path &cdx_path,
-        const std::optional<ComponentId> component_id
+        const std::optional<Cid> component_id
     ) {
         std::ifstream cdx_stream(cdx_path, std::ios::binary);
 
@@ -736,10 +758,10 @@ namespace cdx {
             std::ostringstream nid_range;
 
             nid_range << component.nid_min << "-" << component.nid_max;
-            std::cout   << std::left << std::setw(12) << *component_id
-                        << std::right << std::setw(18) << component_length
-                        << std::setw(15) << component.nb_nodes
-                        << std::setw(25) << nid_range.str() << '\n';
+            std::cout << std::left << std::setw(12) << *component_id
+                    << std::right << std::setw(18) << component_length
+                    << std::setw(15) << component.nb_nodes
+                    << std::setw(25) << nid_range.str() << '\n';
             return;
         }
 
@@ -747,7 +769,7 @@ namespace cdx {
         RecordCount total_nodes = 0;
         PosBp total_length_bp = 0;
 
-        for (ComponentId compo_id = 0; compo_id < component_count; ++compo_id) {
+        for (Cid compo_id = 0; compo_id < component_count; ++compo_id) {
             const auto component = readComponentHeader(cdx_stream, compo_id);
             const auto records = readComponentPayload(cdx_stream, component.nb_nodes);
             const auto idx2bp = buildIdx2Pos(records, component.nb_nodes);
@@ -759,10 +781,10 @@ namespace cdx {
             std::ostringstream nid_range;
 
             nid_range << component.nid_min << "-" << component.nid_max;
-            std::cout   << std::left << std::setw(12) << compo_id
-                        << std::right << std::setw(18) << component_length
-                        << std::setw(15) << component.nb_nodes
-                        << std::setw(25) << nid_range.str() << '\n';
+            std::cout << std::left << std::setw(12) << compo_id
+                    << std::right << std::setw(18) << component_length
+                    << std::setw(15) << component.nb_nodes
+                    << std::setw(25) << nid_range.str() << '\n';
         }
 
         std::cout << std::string(73, '-') << '\n';
