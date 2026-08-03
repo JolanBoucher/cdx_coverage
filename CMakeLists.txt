@@ -126,6 +126,10 @@ add_executable(cdx_coverage
         src/output_stats.h
         src/output_coverage.cpp
         src/output_coverage.h
+        src/cli.cpp
+        src/cli.hpp
+        src/query_resolver.cpp
+        src/query_resolver.h
 )
 
 target_compile_features(cdx_coverage PRIVATE cxx_std_17)

@@ -14,9 +14,9 @@ namespace cfg {
     inline constexpr std::uint32_t INVALID_NODE = 0xFFFFFFFF;
 
     // default file name
-    inline constexpr std::string_view NAME_TSV_FILE = "coverage_profile";
-    inline constexpr std:: string_view NAME_STATS_FILE = "coverage_stats";
-    inline constexpr std::string_view NAME_GRAPH_FILE = "coverage_graph";
+    inline constexpr std::string_view NAME_TSV_FILE = "coverage_profile.txt";
+    inline constexpr std:: string_view NAME_STATS_FILE = "coverage_stats.tsv";
+    inline constexpr std::string_view NAME_GRAPH_FILE = "coverage_graph.png";
 
     class ScopedTimer {
     public:

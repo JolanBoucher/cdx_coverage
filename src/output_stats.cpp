@@ -226,7 +226,7 @@ namespace {
 
         bool f_l_q1 = false, f_u_q1 = false;
         bool f_l_med = false, f_u_med = false;
-        bool f_l_q3 = false, f_u_q3 = false;
+        bool f_l_q3 = false; //, f_u_q3 = false;
 
         for (std::size_t value = accumulator.min; value <= accumulator.max; ++value) {
             if (value >= accumulator.histogram.size()) break;
