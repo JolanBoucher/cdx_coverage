@@ -15,14 +15,17 @@ namespace cfg {
 
     // default file name
     inline constexpr std::string_view NAME_TSV_FILE = "coverage_profile.txt";
-    inline constexpr std:: string_view NAME_STATS_FILE = "coverage_stats.tsv";
+    inline constexpr std::string_view NAME_STATS_FILE = "coverage_stats.tsv";
     inline constexpr std::string_view NAME_GRAPH_FILE = "coverage_graph.png";
 
+
+    //  clean up timer
     class ScopedTimer {
     public:
         explicit ScopedTimer(std::string name)
             : name_(std::move(name)),
-              start_(std::chrono::steady_clock::now()) {}
+              start_(std::chrono::steady_clock::now()) {
+        }
 
         ~ScopedTimer() {
             const auto end = std::chrono::steady_clock::now();
@@ -34,5 +37,18 @@ namespace cfg {
         std::string name_;
         std::chrono::steady_clock::time_point start_;
     };
+
+   // tiny formating function that transform interger like this 1534430 to this 1,534,430
+    template<typename Integer> [[nodiscard]]
+    std::string formatInteger(const Integer value) {
+
+        std::string text = std::to_string(value);
+        const std::size_t sign_offset = !text.empty() && text.front() == '-' ? 1 : 0;
+
+        for (std::size_t position = text.size(); position > sign_offset + 3; position -= 3)
+            text.insert(position - 3, 1, ',');
+
+        return text;
+    }
 }
 #endif //CDX_COVERAGE_CONFIG_H

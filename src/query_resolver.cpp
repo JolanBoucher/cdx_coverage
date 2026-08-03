@@ -63,7 +63,10 @@ std::size_t ComponentResolver::levenshtein_distance(const std::string& s1, const
     return dp[m][n];
 }
 
-std::vector<std::string> ComponentResolver::get_suggestions(const std::string& query, std::size_t max_suggestions) const {
+std::vector<std::string> ComponentResolver::get_suggestions(
+    const std::string& query,
+    std::size_t max_suggestions) const {
+
     std::string lower_query = to_lower(query);
     std::vector<std::string> suggestions;
 
@@ -124,7 +127,7 @@ ResolvedComponent ComponentResolver::resolve(const std::string& query) const {
 
     // RÈGLE 3 : Erreur + Suggestions
     std::ostringstream oss;
-    oss << "Component '" << query << "' was not found.\n";
+    oss << "Component '" << query << "' was not found.";
 
     auto suggestions = get_suggestions(query);
     if (!suggestions.empty()) {

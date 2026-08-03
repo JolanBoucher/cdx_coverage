@@ -30,7 +30,7 @@ namespace cdx {
 
     void inspectComponent(
         const std::filesystem::path &cdx_path,
-        std::optional<std::size_t> component_id = std::nullopt
+        std::optional<Cid> component_id = std::nullopt
     );
 }
 

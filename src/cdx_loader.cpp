@@ -718,79 +718,145 @@ namespace cdx {
         return global_data;
     }
 
-    void inspectComponent(
-        const std::filesystem::path &cdx_path,
-        const std::optional<Cid> component_id
+void inspectComponent(
+    const std::filesystem::path& cdx_path,
+    const std::optional<Cid> component_id
+) {
+    std::ifstream cdx_stream(cdx_path, std::ios::binary);
+
+    if (!cdx_stream) {
+        throw std::runtime_error("Unable to open CDX file: " + cdx_path.string());
+    }
+
+    const FileHeader header = readGlobalHeader(cdx_stream);
+    const auto component_count = header.n_components;
+
+    if (component_count == 0) {
+        throw std::runtime_error("The CDX file does not contain any component.");
+    }
+
+    // Validate requested component.
+    if (component_id && *component_id >= component_count) {
+        throw std::out_of_range(
+            "Component " + std::to_string(*component_id) + " does not exist. Valid range: [0-" +
+            std::to_string(component_count - 1) + "].");
+    }
+
+    constexpr int cid_width = 15;
+    constexpr int name_width = 15;
+    constexpr int length_width = 15;
+    constexpr int nodes_width = 15;
+    constexpr int nid_range_width = 25;
+
+    constexpr std::size_t table_width =
+        cid_width +
+        name_width +
+        length_width +
+        nodes_width +
+        nid_range_width;
+
+    std::cout
+        << std::string(table_width, '=') << '\n'
+        << "CDX COMPONENT SUMMARY\n"
+        << "File: " << cdx_path.filename().string() << '\n'
+        << std::string(table_width, '=') << "\n\n";
+
+    std::cout
+        << std::left << std::setw(cid_width) << "ComponentID"
+        << std::setw(name_width) << "Name"
+        << std::right << std::setw(length_width) << "Length(bp)"
+        << std::setw(nodes_width) << "NB Nodes"
+        << std::setw(nid_range_width) << "NodeID Range"
+        << '\n';
+
+    std::cout << std::string(table_width, '-') << '\n';
+
+    auto print_component = [&](
+        const Cid cid,
+        const ComponentInfo& component,
+        const PosBp component_length
     ) {
-        std::ifstream cdx_stream(cdx_path, std::ios::binary);
+        std::string component_name = component.compo_name;
 
-        if (!cdx_stream) {
-            throw std::runtime_error("Unable to open CDX file: " + cdx_path.string());
+        /*
+         * Prevent a very long component name from breaking the table.
+         * Keep one character for the '~' truncation marker.
+         */
+        if (component_name.size() > static_cast<std::size_t>(name_width - 1)) {
+            component_name.resize(name_width - 2);
+            component_name += '~';
         }
 
-        const FileHeader header = readGlobalHeader(cdx_stream);
-        const auto component_count = header.n_components;
-
-        // Validate requested component.
-        if (component_id && *component_id >= component_count) {
-            throw std::out_of_range("Component " + std::to_string(*component_id) + " does not exist. "
-                                    "Valid range: [0-" + std::to_string(component_count - 1) + "].");
-        }
+        const std::string nid_range =
+            cfg::formatInteger(component.nid_min) + "-" + cfg::formatInteger(component.nid_max);
 
         std::cout
-                << "=========================================================================\n"
-                << "CDX COMPONENT SUMMARY\n"
-                << "File: " + cdx_path.filename().string() + "\n"
-                << "=========================================================================\n\n";
+            << std::left
+            << std::setw(cid_width) << cid
+            << std::setw(name_width) << component_name
+            << std::right
+            << std::setw(length_width)
+            << cfg::formatInteger(component_length)
+            << std::setw(nodes_width)
+            << cfg::formatInteger(component.nb_nodes)
+            << std::setw(nid_range_width)
+            << nid_range
+            << '\n';
+    };
 
-        std::cout << std::left << std::setw(12) << "Component" << std::right << std::setw(18) << "Length(bp)"
-                << std::setw(15) << "Nodes" << std::setw(25) << "NodeID Range" << '\n';
+    // Single-component inspection.
+    if (component_id) {
+        const ComponentInfo compo = seekComponent(cdx_stream, *component_id);
+        const auto records = readComponentPayload(cdx_stream, compo.nb_nodes);
+        const auto idx2bp = buildIdx2Pos(records, compo.nb_nodes);
 
-        std::cout << std::string(73, '-') << '\n';
-
-        // Single-component inspection.
-        if (component_id) {
-            const auto component = seekComponent(cdx_stream, *component_id);
-            const auto records = readComponentPayload(cdx_stream, component.nb_nodes);
-            const auto idx2bp = buildIdx2Pos(records, component.nb_nodes);
-            const PosBp component_length = idx2bp.back();
-
-            std::ostringstream nid_range;
-
-            nid_range << component.nid_min << "-" << component.nid_max;
-            std::cout << std::left << std::setw(12) << *component_id
-                    << std::right << std::setw(18) << component_length
-                    << std::setw(15) << component.nb_nodes
-                    << std::setw(25) << nid_range.str() << '\n';
-            return;
+        if (idx2bp.empty()) {
+            throw std::runtime_error(
+                "Unable to determine the length of component " +
+                std::to_string(*component_id) + "."
+            );
         }
 
-        // Full inspection.
-        RecordCount total_nodes = 0;
-        PosBp total_length_bp = 0;
+        const PosBp compo_len = idx2bp.back();
 
-        for (Cid compo_id = 0; compo_id < component_count; ++compo_id) {
-            const auto component = readComponentHeader(cdx_stream, compo_id);
-            const auto records = readComponentPayload(cdx_stream, component.nb_nodes);
-            const auto idx2bp = buildIdx2Pos(records, component.nb_nodes);
-            const PosBp component_length = idx2bp.back();
-
-            total_nodes += component.nb_nodes;
-            total_length_bp += component_length;
-
-            std::ostringstream nid_range;
-
-            nid_range << component.nid_min << "-" << component.nid_max;
-            std::cout << std::left << std::setw(12) << compo_id
-                    << std::right << std::setw(18) << component_length
-                    << std::setw(15) << component.nb_nodes
-                    << std::setw(25) << nid_range.str() << '\n';
-        }
-
-        std::cout << std::string(73, '-') << '\n';
-        std::cout << std::left << std::setw(12) << "Total"
-                << std::right << std::setw(18) << total_length_bp
-                << std::setw(15) << total_nodes
-                << std::setw(25) << "-" << '\n';
+        print_component(*component_id, compo, compo_len);
+        return;
     }
+
+    // Full inspection.
+    RecordCount total_nodes = 0;
+    PosBp total_length_bp = 0;
+
+    for (Cid cid = 0; cid < component_count; ++cid) {
+        const ComponentInfo compo = readComponentHeader(cdx_stream, cid);
+        const auto records = readComponentPayload(cdx_stream, compo.nb_nodes);
+        const auto idx2bp = buildIdx2Pos(records, compo.nb_nodes);
+
+        if (idx2bp.empty()) {
+            throw std::runtime_error("Unable to determine the length of component " + std::to_string(cid) + ".");
+        }
+
+        const PosBp comp_len = idx2bp.back();
+
+        total_nodes += compo.nb_nodes;
+        total_length_bp += comp_len;
+
+        print_component(cid, compo, comp_len);
+    }
+
+    std::cout << std::string(table_width, '-') << '\n';
+
+    std::cout
+        << std::left
+        << std::setw(cid_width) << "Total"
+        << std::setw(name_width) << "-"
+        << std::right
+        << std::setw(length_width)
+        << cfg::formatInteger(total_length_bp)
+        << std::setw(nodes_width)
+        << cfg::formatInteger(total_nodes)
+        << std::setw(nid_range_width)
+        << "-"
+        << '\n';
+}
 }
