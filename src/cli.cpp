@@ -283,10 +283,6 @@ CliArgs parse_args(const int argc, char **argv) {
         std::exit(1);
     }
 
-    // User Feedback Log
-    std::cerr << "[INFO] Worker threads: " << args.worker_threads << '\n'
-              << "[INFO] Decompression threads: " << args.decompression_threads << '\n';
-
     if (!query_raw.empty()) {
         try {
             args.query = parse_query(query_raw);
