@@ -19,15 +19,14 @@
 #include <vector>
 #include <omp.h>
 
-void process_gam(
-    const std::string& gam_file,
-    std::vector<cdx::Coverage>& target,
+GamMappingStats process_gam(
+    const std::string &gam_file,
+    std::vector<cdx::Coverage> &target,
     const cdx::Nid nid_min,
-    std::uint64_t& read_count,
     const std::size_t batch_size,
     const int decompression_threads
 ) {
-    // 1. Argument validation
+    // 1. Validation des arguments
     if (batch_size == 0) {
         throw std::invalid_argument(
             "batch_size must be strictly greater than zero."
@@ -40,243 +39,143 @@ void process_gam(
         );
     }
 
-    read_count = 0;
+    if (target.empty()) {
+        throw std::invalid_argument(
+            "Target coverage vector must not be empty."
+        );
+    }
 
-    std::ifstream gam_stream(
-        gam_file,
-        std::ios::in | std::ios::binary
-    );
+    std::ifstream gam_stream(gam_file, std::ios::in | std::ios::binary);
 
     if (!gam_stream) {
-        throw std::runtime_error(
-            "Failed to open GAM file: " + gam_file
-        );
+        throw std::runtime_error("Failed to open GAM file: " + gam_file);
     }
 
     const std::size_t coverage_size = target.size();
 
-    if (coverage_size == 0) {
-        return;
-    }
-
     /*
-     * Preserve which local nodes belong to the query.
-     *
-     * We cannot use target directly from the worker tasks because target
-     * will receive the final coverage during the reduction.
+     * Préserve les nœuds locaux appartenant réellement à la query.
      */
     std::vector<std::uint8_t> valid_nodes(coverage_size, 0);
 
-    for (std::size_t node_offset = 0;
-         node_offset < coverage_size;
-         ++node_offset) {
-
+    for (std::size_t node_offset = 0; node_offset < coverage_size; ++node_offset) {
         if (target[node_offset] < cfg::NOT_IN_QUERY) {
             valid_nodes[node_offset] = 1;
         }
     }
 
-    // Cap workers to a maximum of 8 threads.
+    // Limite les workers à un maximum de 8 threads.
     const int available_threads = omp_get_max_threads();
-    const int active_threads = std::max(
-        1,
-        std::min(available_threads, 8)
-    );
+    const int active_threads = std::max(1, std::min(available_threads, 8));
 
-    /*
-     * Avoid changing the global OpenMP thread setting with
-     * omp_set_num_threads(). The num_threads clause only applies to
-     * this region.
-     */
-
-    std::vector<std::vector<std::uint32_t>> local_coverages(
-        static_cast<std::size_t>(active_threads),
-        std::vector<std::uint32_t>(coverage_size, 0)
-    );
-
-    std::vector<std::uint64_t> local_read_counts(
-        static_cast<std::size_t>(active_threads),
-        0
-    );
-
-    /*
-     * These counters are informational. Nodes outside the local component
-     * or outside the query are expected and are not errors.
-     */
-    std::vector<std::uint64_t> local_outside_range_counts(
-        static_cast<std::size_t>(active_threads),
-        0
-    );
-
-    std::vector<std::uint64_t> local_outside_query_counts(
-        static_cast<std::size_t>(active_threads),
-        0
-    );
-
+    std::vector local_coverages(static_cast<std::size_t>(active_threads), std::vector<std::uint32_t>(coverage_size, 0));
+    std::vector<GamMappingStats> local_stats(static_cast<std::size_t>(active_threads));
     std::exception_ptr reader_exception;
 
     try {
-        vg::io::MessageIterator message_it(
-            gam_stream,
-            false,
-            decompression_threads
-        );
-
-        #pragma omp parallel num_threads(active_threads)
+        vg::io::MessageIterator message_it(gam_stream, false, decompression_threads);
+#pragma omp parallel num_threads(active_threads)
         {
-            #pragma omp single
+#pragma omp single
             {
                 try {
                     while (message_it.has_current()) {
-                        auto batch =
-                            std::make_unique<std::vector<std::string>>();
-
+                        auto batch = std::make_unique<std::vector<std::string> >();
                         batch->reserve(batch_size);
 
-                        while (
-                            message_it.has_current() &&
-                            batch->size() < batch_size
-                        ) {
-                            auto tag_and_data =
-                                std::move(message_it.take());
+                        while (message_it.has_current() && batch->size() < batch_size) {
+                            auto tag_and_data = std::move(message_it.take());
 
-                            if (!vg::io::Registry::check_protobuf_tag<
-                                    vg::Alignment
-                                >(tag_and_data.first)) {
+                            if (!vg::io::Registry::check_protobuf_tag<vg::Alignment>(tag_and_data.first)) {
                                 continue;
                             }
-
                             if (tag_and_data.second) {
-                                batch->push_back(
-                                    std::move(*tag_and_data.second)
-                                );
+                                batch->push_back(std::move(*tag_and_data.second));
                             }
                         }
 
-                        if (batch->empty()) {
-                            continue;
-                        }
+                        if (batch->empty()) continue;
+                        auto *raw_batch_ptr = batch.release();
 
-                        auto* raw_batch_ptr = batch.release();
-
-                        #pragma omp task firstprivate(raw_batch_ptr)
+#pragma omp task firstprivate(raw_batch_ptr)
                         {
-                            std::unique_ptr<std::vector<std::string>>
-                                owned_batch(raw_batch_ptr);
+                            std::unique_ptr<std::vector<std::string> > owned_batch(raw_batch_ptr);
+                            const std::size_t tid = static_cast<std::size_t>(omp_get_thread_num());
 
-                            const std::size_t tid =
-                                static_cast<std::size_t>(
-                                    omp_get_thread_num()
-                                );
+                            std::uint32_t *const coverage = local_coverages[tid].data();
 
-                            std::uint32_t* const coverage =
-                                local_coverages[tid].data();
-
-                            std::uint64_t parsed_reads = 0;
-                            std::uint64_t outside_range = 0;
-                            std::uint64_t outside_query = 0;
-
+                            GamMappingStats task_stats;
                             vg::Alignment alignment;
 
-                            for (const std::string& serialized :
-                                 *owned_batch) {
-
-                                if (
-                                    serialized.size() >
-                                    static_cast<std::size_t>(
-                                        std::numeric_limits<int>::max()
-                                    )
-                                ) {
+                            for (const std::string &serialized: *owned_batch) {
+                                if (serialized.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
                                     continue;
                                 }
-
                                 alignment.Clear();
 
-                                if (!alignment.ParseFromArray(
-                                        serialized.data(),
-                                        static_cast<int>(
-                                            serialized.size()
-                                        )
-                                    )) {
+                                if (!alignment.ParseFromArray(serialized.data(), static_cast<int>(serialized.size()))) {
                                     continue;
                                 }
 
-                                ++parsed_reads;
+                                ++task_stats.total;
 
-                                const vg::Path& path = alignment.path();
+                                bool read_is_mapped = false;
+                                bool read_maps_to_query = false;
 
-                                for (int i = 0;
-                                     i < path.mapping_size();
-                                     ++i) {
+                                const vg::Path &path = alignment.path();
 
-                                    const std::int64_t signed_node_id =
-                                        path.mapping(i)
-                                            .position()
-                                            .node_id();
+                                for (int i = 0; i < path.mapping_size(); ++i) {
 
-                                    if (signed_node_id <= 0) {
-                                        continue;
-                                    }
+                                    const std::int64_t signed_node_id = path.mapping(i).position().node_id();
 
-                                    const auto node_id =
-                                        static_cast<cdx::Nid>(
-                                            signed_node_id
-                                        );
+                                    if (signed_node_id <= 0) continue;
 
-                                    /*
-                                     * The GAM uses global node IDs.
-                                     * target uses local offsets beginning
-                                     * at nid_min.
-                                     */
+                                    // Le read est considéré comme mapped dès qu'il contient au moins un node ID positif
+                                    read_is_mapped = true;
+
+                                    const auto node_id = static_cast<cdx::Nid>(signed_node_id);
+
+                                    // Nœud situé avant la plage locale.
                                     if (node_id < nid_min) {
-                                        ++outside_range;
                                         continue;
                                     }
 
-                                    const cdx::Nid raw_offset =
-                                        node_id - nid_min;
+                                    const cdx::Nid raw_offset = node_id - nid_min;
 
-                                    if (
-                                        raw_offset >=
-                                        static_cast<cdx::Nid>(
-                                            coverage_size
-                                        )
-                                    ) {
-                                        ++outside_range;
+                                    // Nœud situé après la plage locale.
+                                    if (raw_offset >= static_cast<cdx::Nid>(coverage_size)) {
                                         continue;
                                     }
 
-                                    const std::size_t node_offset =
-                                        static_cast<std::size_t>(
-                                            raw_offset
-                                        );
+                                    const std::size_t node_offset = static_cast<std::size_t>(raw_offset);
 
-                                    /*
-                                     * The node belongs to the component,
-                                     * but not necessarily to the requested
-                                     * genomic interval.
-                                     */
+                                    // Nœud dans la composante, mais exclu de la query.
                                     if (!valid_nodes[node_offset]) {
-                                        ++outside_query;
                                         continue;
                                     }
 
                                     ++coverage[node_offset];
+                                    read_maps_to_query = true;
+                                }
+
+                                if (read_is_mapped) {
+                                    ++task_stats.mapped;
+                                } else {
+                                    ++task_stats.unmapped;
+                                }
+
+                                if (read_maps_to_query) {
+                                    ++task_stats.mapped_to_query;
                                 }
                             }
-
-                            local_read_counts[tid] += parsed_reads;
-                            local_outside_range_counts[tid] +=
-                                outside_range;
-                            local_outside_query_counts[tid] +=
-                                outside_query;
+                            local_stats[tid] += task_stats;
                         }
                     }
                 } catch (...) {
                     reader_exception = std::current_exception();
                 }
 
-                #pragma omp taskwait
+#pragma omp taskwait
             }
         }
     } catch (...) {
@@ -286,115 +185,75 @@ void process_gam(
     if (reader_exception) {
         try {
             std::rethrow_exception(reader_exception);
-        } catch (const std::exception& error) {
-            throw std::runtime_error(
-                "Failed to parse GAM file '" +
-                gam_file +
-                "': " +
-                error.what()
-            );
+        } catch (const std::exception &error) {
+            throw std::runtime_error("Failed to parse GAM file '" + gam_file + "': " + error.what());
         }
     }
 
-    std::uint64_t outside_range_count = 0;
-    std::uint64_t outside_query_count = 0;
-
-    for (std::size_t tid = 0;
-         tid < local_read_counts.size();
-         ++tid) {
-
-        read_count += local_read_counts[tid];
-
-        outside_range_count +=
-            local_outside_range_counts[tid];
-
-        outside_query_count +=
-            local_outside_query_counts[tid];
+    // Agrégation des statistiques thread-local
+    GamMappingStats stats;
+    for (const GamMappingStats &thread_stats: local_stats) {
+        stats += thread_stats;
     }
 
-    /*
-     * Do not throw for nodes outside the local component.
-     *
-     * A GAM may legitimately contain alignments from every component,
-     * while target represents only one component or one query.
-     */
-#ifdef CDX_GAM_DEBUG
+    // Vérification des invariants de statistiques
+    if (stats.total != stats.mapped + stats.unmapped) {
+        throw std::logic_error("Inconsistent GAM mapping statistics: total != mapped + unmapped.");
+    }
+
+    if (stats.mapped_to_query > stats.mapped) {
+        throw std::logic_error("Inconsistent GAM mapping statistics: mapped_to_query exceeds mapped.");
+    }
+
+#ifndef NDEBUG
     std::cerr
-        << "[DEBUG] GAM mappings outside local component: "
-        << outside_range_count
-        << '\n'
-        << "[DEBUG] GAM mappings inside component but outside query: "
-        << outside_query_count
-        << '\n';
+            << "[DEBUG] GAM alignments total: "
+            << stats.total
+            << '\n'
+            << "[DEBUG] GAM alignments mapped: "
+            << stats.mapped
+            << '\n'
+            << "[DEBUG] GAM alignments mapped to query: "
+            << stats.mapped_to_query
+            << '\n'
+            << "[DEBUG] GAM alignments unmapped: "
+            << stats.unmapped
+            << '\n';
 #endif
 
     /*
-     * Combine thread-local vectors into target.
-     *
-     * Only valid query nodes are overwritten. NOT_IN_QUERY values remain
-     * unchanged.
+     * Réduction du vecteur de couverture local vers le vecteur target final.
      */
-    #pragma omp parallel num_threads(active_threads)
+#pragma omp parallel num_threads(active_threads)
     {
-        const std::size_t worker =
-            static_cast<std::size_t>(omp_get_thread_num());
-
-        const std::size_t workers =
-            static_cast<std::size_t>(omp_get_num_threads());
-
-        const std::size_t block =
-            (coverage_size + workers - 1) / workers;
-
+        const std::size_t worker = static_cast<std::size_t>(omp_get_thread_num());
+        const std::size_t workers = static_cast<std::size_t>(omp_get_num_threads());
+        const std::size_t block = (coverage_size + workers - 1) / workers;
         const std::size_t begin = worker * block;
-        const std::size_t end =
-            std::min(begin + block, coverage_size);
-
+        const std::size_t end = std::min(begin + block, coverage_size);
         for (std::size_t node_offset = begin;
              node_offset < end;
              ++node_offset) {
-
-            if (!valid_nodes[node_offset]) {
-                continue;
-            }
+            if (!valid_nodes[node_offset]) continue;
 
             std::uint64_t total_coverage = 0;
-
-            for (const auto& source : local_coverages) {
+            for (const auto &source: local_coverages) {
                 total_coverage += source[node_offset];
             }
 
-            /*
-             * Preserve the behavior of the existing uint32_t storage,
-             * but detect an actual coverage overflow.
-             */
-            if (
-                total_coverage >
-                static_cast<std::uint64_t>(
-                    std::numeric_limits<cdx::Coverage>::max()
-                )
-            ) {
-                /*
-                 * An exception cannot safely escape an OpenMP region.
-                 * Saturating here is one possible policy.
-                 *
-                 * If saturation is undesirable, collect an overflow flag
-                 * and throw after the parallel region.
-                 */
-                target[node_offset] =
-                    std::numeric_limits<cdx::Coverage>::max();
+            if (total_coverage > static_cast<std::uint64_t>(std::numeric_limits<cdx::Coverage>::max())) {
+                target[node_offset] = std::numeric_limits<cdx::Coverage>::max();
             } else {
-                target[node_offset] =
-                    static_cast<cdx::Coverage>(total_coverage);
+                target[node_offset] = static_cast<cdx::Coverage>(total_coverage);
             }
         }
     }
+
+    return stats;
 }
 
 /**
  * Lit un fichier GAM et affiche les informations du premier alignment trouvé.
- *
- * @param gam_file Le chemin vers le fichier GAM.
- * @return True si au moins un alignment a été lu et affiché avec succès, false sinon.
  */
 bool inspect_first_alignment(const std::string &gam_file) {
     std::ifstream gam_stream(gam_file, std::ios::in | std::ios::binary);
@@ -411,7 +270,7 @@ bool inspect_first_alignment(const std::string &gam_file) {
 
             if (vg::io::Registry::check_protobuf_tag<vg::Alignment>(tag_and_data.first)) {
                 if (!tag_and_data.second || tag_and_data.second->empty()) {
-                    continue; // Ignore les messages d'en-tête/métadonnées vides
+                    continue;
                 }
 
                 vg::Alignment alignment;
@@ -420,7 +279,6 @@ bool inspect_first_alignment(const std::string &gam_file) {
                     continue;
                 }
 
-                // Premier Alignment valide trouvé : affichage des détails
                 std::cout << "Read name: " << alignment.name() << '\n';
                 std::cout << "Read length: " << alignment.sequence().size() << '\n';
                 std::cout << "Mapping quality: " << alignment.mapping_quality() << '\n';
@@ -460,7 +318,7 @@ bool inspect_first_alignment(const std::string &gam_file) {
                 }
                 std::cout << '\n';
 
-                return true; // Succès : traitement terminé dès le premier alignment
+                return true;
             }
         }
     } catch (const std::exception &error) {

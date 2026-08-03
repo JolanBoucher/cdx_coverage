@@ -359,48 +359,46 @@ namespace output {
     }
 
     void writeStatsReportQuery(
-        const std::filesystem::path &output_txt,
-        const std::map<std::string, std::uint64_t> &mapping,
+        const std::filesystem::path &output_path,
+        const GamMappingStats &mapping_stats,
         const std::vector<cdx::Coverage> &coverage,
         const std::string &component_name
     ) {
-        constexpr std::array<const char *, 4> required_keys{"total", "mapped", "mapped_to_query", "unmapped"};
-        for (const auto *key: required_keys) {
-            if (mapping.find(key) == mapping.end()) {
-                throw std::invalid_argument("Missing mapping statistic: " + std::string(key));
-            }
+        if (mapping_stats.mapped > mapping_stats.total) {
+            throw std::invalid_argument("Mapped reads cannot exceed total reads.");
         }
-
-        const std::uint64_t total = mapping.at("total");
-        const std::uint64_t mapped = mapping.at("mapped");
-        const std::uint64_t mapped_to_query = mapping.at("mapped_to_query");
-        const std::uint64_t unmapped = mapping.at("unmapped");
-
-        if (mapped > total) throw std::invalid_argument("Mapped reads cannot exceed total reads.");
-        if (unmapped > total) throw std::invalid_argument("Unmapped reads cannot exceed total reads.");
-        if (mapped_to_query > mapped) throw std::invalid_argument("Reads mapped to query cannot exceed mapped reads.");
-        if (mapped + unmapped != total) {
+        if (mapping_stats.unmapped > mapping_stats.total) {
+            throw std::invalid_argument("Unmapped reads cannot exceed total reads.");
+        }
+        if (mapping_stats.mapped_to_query > mapping_stats.mapped) {
+            throw std::invalid_argument("Reads mapped to query cannot exceed mapped reads.");
+        }
+        if (mapping_stats.mapped + mapping_stats.unmapped != mapping_stats.total) {
             throw std::invalid_argument("Mapped and unmapped reads must sum to total reads.");
         }
 
         const CoverageStats coverage_stats = computeCoverageStats(coverage);
 
-        const double pct_mapped = total
-                                      ? 100.0 * static_cast<double>(mapped) / static_cast<double>(total)
+        const double pct_mapped = mapping_stats.total
+                                      ? 100.0 * static_cast<double>(mapping_stats.mapped) / static_cast<double>(
+                                            mapping_stats.total)
                                       : 0.0;
-        const double pct_query_total = total
-                                           ? 100.0 * static_cast<double>(mapped_to_query) / static_cast<double>(total)
+        const double pct_query_total = mapping_stats.total
+                                           ? 100.0 * static_cast<double>(mapping_stats.mapped_to_query) / static_cast<
+                                                 double>(mapping_stats.total)
                                            : 0.0;
-        const double pct_query_mapped = mapped
-                                            ? 100.0 * static_cast<double>(mapped_to_query) / static_cast<double>(mapped)
+        const double pct_query_mapped = mapping_stats.mapped
+                                            ? 100.0 * static_cast<double>(mapping_stats.mapped_to_query) / static_cast<
+                                                  double>(mapping_stats.mapped)
                                             : 0.0;
-        const double pct_unmapped = total
-                                        ? 100.0 * static_cast<double>(unmapped) / static_cast<double>(total)
+        const double pct_unmapped = mapping_stats.total
+                                        ? 100.0 * static_cast<double>(mapping_stats.unmapped) / static_cast<double>(
+                                              mapping_stats.total)
                                         : 0.0;
 
-        std::ofstream report(output_txt);
+        std::ofstream report(output_path);
         if (!report) {
-            throw std::runtime_error("Unable to open report file: " + output_txt.string());
+            throw std::runtime_error("Unable to open report file: " + output_path.string());
         }
 
         report << std::string(70, '=') << '\n';
@@ -410,64 +408,62 @@ namespace output {
 
         report << "[ Mapping Statistics ]\n";
         report << std::string(70, '-') << '\n';
-        report << std::left << std::setw(30) << "Total reads" << " : " << formatInteger(total) << '\n';
-        report << std::left << std::setw(30) << "Mapped reads" << " : " << formatInteger(mapped)
+        report << std::left << std::setw(30) << "Total reads" << " : " << formatInteger(mapping_stats.total) << '\n';
+        report << std::left << std::setw(30) << "Mapped reads" << " : " << formatInteger(mapping_stats.mapped)
                 << " (" << std::fixed << std::setprecision(2) << pct_mapped << "%)\n";
-        report << std::left << std::setw(30) << "Reads mapped to query" << " : " << formatInteger(mapped_to_query) <<
-                '\n';
+        report << std::left << std::setw(30) << "Reads mapped to query" << " : " << formatInteger(
+            mapping_stats.mapped_to_query) << '\n';
         report << std::left << std::setw(30) << "  Percentage of total" << " : " << pct_query_total << "%\n";
         report << std::left << std::setw(30) << "  Percentage of mapped" << " : " << pct_query_mapped << "%\n";
-        report << std::left << std::setw(30) << "Unmapped reads" << " : " << formatInteger(unmapped)
+        report << std::left << std::setw(30) << "Unmapped reads" << " : " << formatInteger(mapping_stats.unmapped)
                 << " (" << pct_unmapped << "%)\n\n";
 
         writeCoverageStatsSection(report, "Coverage Statistics", coverage_stats);
     }
 
     void writeStatsReportGlobal(
-        const std::filesystem::path &output_txt,
-        const std::vector<cdx::Coverage> &flat_bp_cov_table,
-        const std::vector<cdx::PosBp> &bp_component_offsets,
+        const std::filesystem::path &output_path,
+        const std::vector<cdx::Coverage> &coverage,
+        const std::vector<cdx::PosBp> &component_offsets,
         const std::vector<std::string> &component_names,
-        const std::map<std::string, std::uint64_t> *mapping_stats
+        const GamMappingStats &mapping_stats
     ) {
-        if (bp_component_offsets.size() < 2) {
+        if (component_offsets.size() < 2) {
             throw std::invalid_argument("bp_component_offsets must contain at least two boundaries.");
         }
-        if (component_names.size() + 1 != bp_component_offsets.size()) {
+        if (component_names.size() + 1 != component_offsets.size()) {
             throw std::invalid_argument("Component name count does not match component count.");
         }
 
-        if (bp_component_offsets.front() != 0) {
+        if (component_offsets.front() != 0) {
             throw std::invalid_argument("The first bp component offset must be zero.");
         }
-        if (bp_component_offsets.back() != static_cast<cdx::PosBp>(flat_bp_cov_table.size())) {
+        if (component_offsets.back() != static_cast<cdx::PosBp>(coverage.size())) {
             throw std::invalid_argument("The final bp component offset must match the flattened coverage table size.");
         }
-        for (std::size_t i = 1; i < bp_component_offsets.size(); ++i) {
-            if (bp_component_offsets[i] < bp_component_offsets[i - 1]) {
+        for (std::size_t i = 1; i < component_offsets.size(); ++i) {
+            if (component_offsets[i] < component_offsets[i - 1]) {
                 throw std::invalid_argument("bp_component_offsets must be non-decreasing.");
             }
         }
 
-        std::ofstream report(output_txt);
+        std::ofstream report(output_path);
         if (!report) {
-            throw std::runtime_error("Unable to open report file: " + output_txt.string());
+            throw std::runtime_error("Unable to open report file: " + output_path.string());
         }
 
         report << std::string(70, '=') << '\n';
         report << "COVERAGE REPORT\n";
-        report << std::string(70, '=') << '\n';
+        report << std::string(70, '=') << "\n\n";
 
-        if (mapping_stats != nullptr) {
-            report << "[ Mapping Statistics ]\n";
-            report << std::string(70, '-') << '\n';
-            for (const auto &[key, value]: *mapping_stats) {
-                report << std::left << std::setw(30) << key << " : " << value << '\n';
-            }
-            report << '\n';
-        }
+        report << "[ Mapping Statistics ]\n";
+        report << std::string(70, '-') << '\n';
+        report << std::left << std::setw(30) << "Total reads" << " : " << formatInteger(mapping_stats.total) << '\n';
+        report << std::left << std::setw(30) << "Mapped reads" << " : " << formatInteger(mapping_stats.mapped) << '\n';
+        report << std::left << std::setw(30) << "Reads mapped to query" << " : " << formatInteger(
+            mapping_stats.mapped_to_query) << "\n\n";
 
-        const std::size_t component_count = bp_component_offsets.size() - 1;
+        const std::size_t component_count = component_offsets.size() - 1;
         std::vector<CoverageAccumulator> component_accumulators(component_count);
         std::vector<CoverageStats> component_stats(component_count);
         std::vector<std::uint8_t> component_uses_fallback(component_count, 0);
@@ -480,13 +476,13 @@ namespace output {
                  component_index < static_cast<std::ptrdiff_t>(component_count);
                  ++component_index) {
                 const auto component_id = static_cast<std::size_t>(component_index);
-                const auto start_index = static_cast<std::size_t>(bp_component_offsets[component_id]);
-                const auto end_index = static_cast<std::size_t>(bp_component_offsets[component_id + 1]);
+                const auto start_index = static_cast<std::size_t>(component_offsets[component_id]);
+                const auto end_index = static_cast<std::size_t>(component_offsets[component_id + 1]);
 
                 const auto begin_iterator
-                        = flat_bp_cov_table.begin() + static_cast<std::ptrdiff_t>(start_index);
+                        = coverage.begin() + static_cast<std::ptrdiff_t>(start_index);
                 const auto end_iterator
-                        = flat_bp_cov_table.begin() + static_cast<std::ptrdiff_t>(end_index);
+                        = coverage.begin() + static_cast<std::ptrdiff_t>(end_index);
 
                 component_accumulators[component_id] = accumulateRange(
                     begin_iterator,
@@ -521,8 +517,8 @@ namespace output {
         CoverageStats global_stats;
         if (global_fallback) {
             global_stats = computeCoverageStatsNthElement(
-                flat_bp_cov_table.begin(),
-                flat_bp_cov_table.end()
+                coverage.begin(),
+                coverage.end()
             );
         } else {
             global_stats = finalizeStatsFromAccumulator(global_accumulator);

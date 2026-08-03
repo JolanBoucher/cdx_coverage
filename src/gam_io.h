@@ -1,46 +1,57 @@
-//
-// Created by Jolan on 2026-07-31.
-//
-
 #ifndef GAM_IO_H
 #define GAM_IO_H
 
 #include "cdx_types.h"
+
+#include <cstddef>
+#include <cstdint>
 #include <string>
 #include <vector>
-#include <cstdint>
-
 
 /**
- * @brief Rapidly computes node coverage from a GAM (Genomic Alignment Map) file.
+ * @brief Statistiques produites pendant la lecture d'un fichier GAM.
  *
- * Uses a Producer-Consumer pattern with OpenMP tasks:
- * - Thread 0 (Producer) streams and deserializes Protobuf batches from libvgio.
- * - Worker Threads (Consumers) parse alignment paths into thread-local coverage vectors.
- * - Thread-local vectors are reduced in parallel at the end to prevent mutex contention.
- *
- * @param gam_file Path to the input .gam file.
- * @param target
- * @param nid_min
- * @param read_count Output reference updated with total reads processed.
- * @param batch_size Number of GAM alignments packaged per OpenMP task (default: 512).
- * @param decompression_threads BGZF decompression threads for libvgio (default: 4).
+ * Les quatre premiers compteurs sont calculés par alignment/read.
+ * Les deux derniers sont des compteurs diagnostiques calculés par mapping.
  */
-void process_gam(
+struct GamMappingStats {
+    std::uint64_t total = 0;                       // Nombre total d'alignements correctement désérialisés.
+    std::uint64_t mapped = 0;                      // Nombre d'alignements contenant au moins un node ID valide.
+    std::uint64_t mapped_to_query = 0;             // Nombre d'alignements touchant au moins un nœud de la query active.
+    std::uint64_t unmapped = 0;                    // Nombre d'alignements ne contenant aucun node ID valide.
+
+    GamMappingStats& operator+=(const GamMappingStats& other) noexcept {
+        total += other.total;
+        mapped += other.mapped;
+        mapped_to_query += other.mapped_to_query;
+        unmapped += other.unmapped;
+        return *this;
+    }
+};
+
+/**
+ * @brief Calcule la couverture locale et les statistiques d'un fichier GAM.
+ *
+ * @param gam_file Chemin vers le fichier GAM.
+ * @param target Vecteur de couverture dans l'espace local CDX.
+ * @param nid_min Premier node ID global représenté par target.
+ * @param batch_size Nombre maximal d'alignements par tâche OpenMP.
+ * @param decompression_threads Nombre de threads de décompression BGZF.
+ *
+ * @return Statistiques calculées pendant le traitement du GAM.
+ */
+[[nodiscard]]
+GamMappingStats process_gam(
     const std::string& gam_file,
     std::vector<cdx::Coverage>& target,
     cdx::Nid nid_min,
-    std::uint64_t& read_count,
     std::size_t batch_size,
     int decompression_threads
 );
 
 /**
- * Inspecte et affiche dans la console les détails du premier alignment d'un fichier GAM.
- *
- * @param gam_file Chemin vers le fichier GAM à inspecter.
- * @return true si un alignment a été lu et affiché avec succès, false sinon.
+ * @brief Inspecte le premier alignement d'un fichier GAM.
  */
-bool inspect_first_alignment(const std::string& gam_file);
+[[nodiscard]] bool inspect_first_alignment(const std::string& gam_file);
 
 #endif // GAM_IO_H

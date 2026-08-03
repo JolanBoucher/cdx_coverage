@@ -12,7 +12,7 @@
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
-#include <map>
+#include <limits>
 #include <optional>
 #include <stdexcept>
 #include <string>
@@ -20,57 +20,42 @@
 #include <vector>
 
 namespace {
-    using MappingStats = std::map<std::string, std::uint64_t>;
-
     constexpr std::size_t GAM_BATCH_SIZE = 2048;
     constexpr int GAM_DECOMPRESSION_THREADS = 4;
 
     /**
-     * @brief Calcule directement la couverture GAM dans l'espace local CDX.
-     *
-     * @param gam_path Chemin vers le fichier GAM.
-     * @param nid_min Premier node ID global représenté par target.
-     * @param target Vecteur local de couverture CDX. Les valeurs NOT_IN_QUERY
-     *               sont conservées et ignorées pendant le calcul.
-     * @param mapping_stats Statistiques de mapping.
+     * @brief Calcule la couverture GAM et retourne les statistiques de mapping.
      */
-    void processGam(
+    [[nodiscard]]
+    GamMappingStats processGam(
         const std::string &gam_path,
         const cdx::Nid nid_min,
-        std::vector<cdx::Coverage> &target,
-        MappingStats &mapping_stats
+        std::vector<cdx::Coverage> &target
     ) {
-        std::uint64_t read_count = 0;
-
-        process_gam(
+        return process_gam(
             gam_path,
             target,
             nid_min,
-            read_count,
             GAM_BATCH_SIZE,
             GAM_DECOMPRESSION_THREADS
         );
-
-        mapping_stats["total"] = read_count;
-        mapping_stats["mapped"] = read_count;
-        mapping_stats["mapped_to_query"] = 0;
-        mapping_stats["unmapped"] = 0;
     }
 
-    void runGlobalPipeline(const CliArgs &args, MappingStats &mapping_stats) {
+    [[nodiscard]]
+    GamMappingStats runGlobalPipeline(const CliArgs &args) {
         cdx::GlobalData data;
         {
             cfg::ScopedTimer timer("loadGlobal");
             data = cdx::loadGlobal(args.cdx_file);
         }
 
+        GamMappingStats mapping_stats;
         {
             cfg::ScopedTimer timer("processGam");
-            processGam(
+            mapping_stats = processGam(
                 args.gam_file,
                 data.layout.graph_nid_min,
-                data.node_coverage,
-                mapping_stats
+                data.node_coverage
             );
         }
 
@@ -115,15 +100,17 @@ namespace {
                 flat_bp_coverage,
                 bp_component_offsets,
                 data.layout.component_names,
-                &mapping_stats
+                mapping_stats
             );
         }
+
+        return mapping_stats;
     }
 
-    void runQueryPipeline(
+    [[nodiscard]]
+    GamMappingStats runQueryPipeline(
         const CliArgs &args,
-        std::size_t target_cid,
-        MappingStats &mapping_stats
+        const std::size_t target_cid
     ) {
         // Conversion de la plage optionnelle issue des arguments CLI
         std::optional<std::pair<std::int64_t, std::int64_t> > query_range = std::nullopt;
@@ -134,14 +121,7 @@ namespace {
             );
         }
 
-        if (query_range) {
-            std::cerr << "[DEBUG] - Query range: "
-                    << query_range->first << ':' << query_range->second << '\n';
-        } else {
-            std::cerr << "[DEBUG] - Query range: entire component\n";
-        }
-
-        const bool is_circular = (args.component_type == ComponentType::Circular);
+        const bool is_circular = args.component_type == ComponentType::Circular;
 
         cdx::QueryData data;
         {
@@ -154,13 +134,13 @@ namespace {
             );
         }
 
+        GamMappingStats mapping_stats;
         {
             cfg::ScopedTimer timer("processGam");
-            processGam(
+            mapping_stats = processGam(
                 args.gam_file,
                 data.component.nid_min,
-                data.node_coverage,
-                mapping_stats
+                data.node_coverage
             );
         }
 
@@ -205,6 +185,7 @@ namespace {
                 data.component.compo_name
             );
         }
+        return mapping_stats;
     }
 } // anonymous namespace
 
@@ -230,33 +211,34 @@ int main(int argc, char **argv) {
         if (args.inspectMode()) {
             std::optional<cdx::Cid> component_id = std::nullopt;
 
-            // resolve component name to its cid
-            if (args.inspect.component.has_value()) {}
-            const ResolvedComponent resolved = resolver.resolve(*args.inspect.component);
-            if (resolved.cid > static_cast<std::size_t>(std::numeric_limits<cdx::Cid>::max())) {
-                throw std::overflow_error("Resolved component ID exceeds cdx::Cid capacity.");
+            if (args.inspect.component.has_value()) {
+                const ResolvedComponent resolved =
+                        resolver.resolve(*args.inspect.component);
+
+                if (resolved.cid > static_cast<std::size_t>(std::numeric_limits<cdx::Cid>::max())) {
+                    throw std::overflow_error(
+                        "Resolved component ID exceeds cdx::Cid capacity."
+                    );
+                }
+
+                component_id = static_cast<cdx::Cid>(resolved.cid);
             }
 
-            component_id = static_cast<cdx::Cid>(resolved.cid);
-
-            cdx::inspectComponent(std::filesystem::path(args.cdx_file), component_id);
+            cdx::inspectComponent(
+                std::filesystem::path(args.cdx_file),
+                component_id
+            );
             return 0;
         }
 
         // 4. Traitement du PIPELINE DE COUVERTURE
-        MappingStats mapping_stats{
-            {"total", 0},
-            {"mapped", 0},
-            {"mapped_to_query", 0},
-            {"unmapped", 0}
-        };
+        GamMappingStats mapping_stats;
 
         if (args.query.has_value()) {
-            ResolvedComponent resolved = resolver.resolve(args.query->component);
-            runQueryPipeline(args, resolved.cid, mapping_stats);
-
+            const ResolvedComponent resolved = resolver.resolve(args.query->component);
+            mapping_stats = runQueryPipeline(args, resolved.cid);
         } else {
-            runGlobalPipeline(args, mapping_stats);
+            mapping_stats = runGlobalPipeline(args);
         }
 
         std::cout << "Processing completed successfully.\n";
