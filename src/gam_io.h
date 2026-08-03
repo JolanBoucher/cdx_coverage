@@ -46,12 +46,8 @@ GamMappingStats process_gam(
     std::vector<cdx::Coverage>& target,
     cdx::Nid nid_min,
     std::size_t batch_size,
-    int decompression_threads
+    int decompression_threads,
+    int worker_threads
 );
-
-/**
- * @brief Inspecte le premier alignement d'un fichier GAM.
- */
-[[nodiscard]] bool inspect_first_alignment(const std::string& gam_file);
 
 #endif // GAM_IO_H

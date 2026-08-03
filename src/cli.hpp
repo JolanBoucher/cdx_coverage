@@ -39,6 +39,10 @@ struct CliArgs {
     // CDX Inspection Mode
     InspectOptions inspect;
 
+    // threads configuration
+    int worker_threads;
+    int decompression_threads;
+
     // Output Configuration
     std::string output_directory = ".";
     bool no_graph = false;

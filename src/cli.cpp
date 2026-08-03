@@ -1,6 +1,12 @@
 #include "cli.hpp"
 #include <CLI/CLI.hpp>
 
+#if defined(_OPENMP)
+#include <omp.h>
+#else
+#include <thread>
+#endif
+
 #include <algorithm>
 #include <cctype>
 #include <cstdlib>
@@ -24,6 +30,15 @@ namespace {
 
         const auto last = str.find_last_not_of(whitespace);
         return str.substr(first, last - first + 1);
+    }
+
+    [[nodiscard]] int get_hardware_threads() noexcept {
+#if defined(_OPENMP)
+        return omp_get_max_threads();
+#else
+        const unsigned int threads = std::thread::hardware_concurrency();
+        return threads > 0 ? static_cast<int>(threads) : 1;
+#endif
     }
 
     // Custom parser pour --query (nom de composante ou ID + plage optionnelle)
@@ -147,13 +162,31 @@ CliArgs parse_args(const int argc, char **argv) {
 
     std::string comp_type_raw;
     group_query->add_option(
-        "-t,--component-type",
+        "-c,--component-type",
         comp_type_raw,
         "Graph coordinate mapping structure: 'linear'/'l' or 'circular'/'c'. Default: linear."
     );
 
     // ============================================================
-    // 3. INSPECTION GROUP
+    // 3. PERFORMANCE / THREADS GROUP
+    // ============================================================
+    std::string worker_threads_arg = "auto";
+    std::string decompression_threads_arg = "auto";
+
+    app.add_option(
+        "-t,--worker-threads",
+        worker_threads_arg,
+        "Number of threads used for computation (positive integer or 'auto'). Default: auto."
+    );
+
+    app.add_option(
+        "-T,--decompression-threads",
+        decompression_threads_arg,
+        "Number of threads used for decompression of the GAM file (positive integer or 'auto'). Default: auto."
+    );
+
+    // ============================================================
+    // 4. INSPECTION GROUP
     // ============================================================
     std::string inspect_val;
     auto *opt_inspect = app.add_option(
@@ -165,7 +198,7 @@ CliArgs parse_args(const int argc, char **argv) {
     )->type_size(0, 1);
 
     // ============================================================
-    // 4. OUTPUT CONFIGURATION GROUP
+    // 5. OUTPUT CONFIGURATION GROUP
     // ============================================================
     auto *group_output = app.add_option_group("OUTPUT");
 
@@ -175,7 +208,7 @@ CliArgs parse_args(const int argc, char **argv) {
     group_output->add_flag("--no-table", args.no_table, "Skip writing per-node TSV table file.");
 
     // ============================================================
-    // 5. GRAPH RENDERING OPTIONS
+    // 6. GRAPH RENDERING OPTIONS
     // ============================================================
     auto *group_graph = app.add_option_group("GRAPH");
 
@@ -195,7 +228,6 @@ CliArgs parse_args(const int argc, char **argv) {
     std::string fig_size_raw;
     group_graph->add_option("--fig-size", fig_size_raw, "Figure dimensions in inches (WIDTHxHEIGHT), e.g., '7x4.5'.");
 
-    // Buffers temporaires pour éviter l'écrasement par chaîne vide de CLI11
     std::string line_color_raw;
     group_graph->add_option("--color-line", line_color_raw, "Hexadecimal color for coverage line. Default: #1E3A8A.");
 
@@ -223,6 +255,38 @@ CliArgs parse_args(const int argc, char **argv) {
         std::exit(1);
     }
 
+    // --- Dynamic Resolution of Worker & Decompression Threads ---
+    const int machine_threads = get_hardware_threads();
+
+    try {
+        if (worker_threads_arg == "auto") {
+            args.worker_threads = machine_threads;
+        } else {
+            const int requested = std::stoi(worker_threads_arg);
+            if (requested <= 0) {
+                throw std::invalid_argument("Worker threads must be positive or 'auto'.");
+            }
+            args.worker_threads = std::min(requested, machine_threads);
+        }
+
+        if (decompression_threads_arg == "auto") {
+            args.decompression_threads = std::max(1, machine_threads / 2);
+        } else {
+            const int requested = std::stoi(decompression_threads_arg);
+            if (requested <= 0) {
+                throw std::invalid_argument("Decompression threads must be positive or 'auto'.");
+            }
+            args.decompression_threads = std::min(requested, machine_threads);
+        }
+    } catch (const std::exception &e) {
+        std::cerr << "Error parsing thread arguments: " << e.what() << "\n";
+        std::exit(1);
+    }
+
+    // User Feedback Log
+    std::cerr << "[INFO] Worker threads: " << args.worker_threads << '\n'
+              << "[INFO] Decompression threads: " << args.decompression_threads << '\n';
+
     if (!query_raw.empty()) {
         try {
             args.query = parse_query(query_raw);
@@ -245,7 +309,6 @@ CliArgs parse_args(const int argc, char **argv) {
         args.log_base = log_base_val;
     }
 
-    // Assignation conditionnelle des couleurs
     if (!line_color_raw.empty()) {
         try {
             args.line_color = parse_hex_color(line_color_raw);

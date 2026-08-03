@@ -45,6 +45,7 @@ namespace output {
         const std::vector<cdx::Coverage> &coverage,
         const std::vector<cdx::PosBp> &component_offsets,
         const std::vector<std::string> &component_names,
-        const GamMappingStats &mapping_stats
+        const GamMappingStats &mapping_stats,
+        int threads
     );
 } // namespace output

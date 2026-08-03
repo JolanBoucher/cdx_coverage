@@ -426,7 +426,8 @@ namespace output {
         const std::vector<cdx::Coverage> &coverage,
         const std::vector<cdx::PosBp> &component_offsets,
         const std::vector<std::string> &component_names,
-        const GamMappingStats &mapping_stats
+        const GamMappingStats &mapping_stats,
+        int threads
     ) {
         if (component_offsets.size() < 2) {
             throw std::invalid_argument("bp_component_offsets must contain at least two boundaries.");
@@ -470,7 +471,7 @@ namespace output {
 
         {
 #if defined(_OPENMP)
-#pragma omp parallel for schedule(dynamic)
+#pragma omp parallel for schedule(dynamic) num_threads(threads)
 #endif
             for (std::ptrdiff_t component_index = 0;
                  component_index < static_cast<std::ptrdiff_t>(component_count);

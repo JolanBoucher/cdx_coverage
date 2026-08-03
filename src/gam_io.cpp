@@ -20,11 +20,12 @@
 #include <omp.h>
 
 GamMappingStats process_gam(
-    const std::string &gam_file,
-    std::vector<cdx::Coverage> &target,
-    const cdx::Nid nid_min,
-    const std::size_t batch_size,
-    const int decompression_threads
+    const std::string& gam_file,
+    std::vector<cdx::Coverage>& target,
+    cdx::Nid nid_min,
+    std::size_t batch_size,
+    int decompression_threads,
+    int worker_threads
 ) {
     // 1. Validation des arguments
     if (batch_size == 0) {
@@ -64,9 +65,8 @@ GamMappingStats process_gam(
         }
     }
 
-    // Limite les workers à un maximum de 8 threads.
-    const int available_threads = omp_get_max_threads();
-    const int active_threads = std::max(1, std::min(available_threads, 8));
+    // ajoute les worker threads passer en args
+    const int active_threads = worker_threads;
 
     std::vector local_coverages(static_cast<std::size_t>(active_threads), std::vector<std::uint32_t>(coverage_size, 0));
     std::vector<GamMappingStats> local_stats(static_cast<std::size_t>(active_threads));
@@ -250,82 +250,4 @@ GamMappingStats process_gam(
     }
 
     return stats;
-}
-
-/**
- * Lit un fichier GAM et affiche les informations du premier alignment trouvé.
- */
-bool inspect_first_alignment(const std::string &gam_file) {
-    std::ifstream gam_stream(gam_file, std::ios::in | std::ios::binary);
-    if (!gam_stream.is_open()) {
-        std::cerr << "Cannot open GAM file: " << gam_file << '\n';
-        return false;
-    }
-
-    try {
-        vg::io::MessageIterator it(gam_stream);
-
-        while (it.has_current()) {
-            auto tag_and_data = it.take();
-
-            if (vg::io::Registry::check_protobuf_tag<vg::Alignment>(tag_and_data.first)) {
-                if (!tag_and_data.second || tag_and_data.second->empty()) {
-                    continue;
-                }
-
-                vg::Alignment alignment;
-                if (!alignment.ParseFromString(*tag_and_data.second)) {
-                    std::cerr << "Warning: Could not parse alignment body.\n";
-                    continue;
-                }
-
-                std::cout << "Read name: " << alignment.name() << '\n';
-                std::cout << "Read length: " << alignment.sequence().size() << '\n';
-                std::cout << "Mapping quality: " << alignment.mapping_quality() << '\n';
-                std::cout << "Alignment score: " << alignment.score() << '\n';
-                std::cout << "Secondary: " << (alignment.is_secondary() ? "yes" : "no") << '\n';
-
-                const vg::Path &path = alignment.path();
-                std::cout << "Number of mappings: " << path.mapping_size() << "\n\n";
-
-                for (int i = 0; i < path.mapping_size(); ++i) {
-                    const vg::Mapping &mapping = path.mapping(i);
-                    const vg::Position &position = mapping.position();
-
-                    std::cout << "Mapping " << i << '\n';
-                    std::cout << "  node_id: " << position.node_id() << '\n';
-                    std::cout << "  orientation: " << (position.is_reverse() ? "reverse" : "forward") << '\n';
-                    std::cout << "  node_offset: " << position.offset() << '\n';
-                    std::cout << "  rank: " << mapping.rank() << '\n';
-                    std::cout << "  edits: " << mapping.edit_size() << '\n';
-
-                    for (int j = 0; j < mapping.edit_size(); ++j) {
-                        const vg::Edit &edit = mapping.edit(j);
-                        std::cout << "    Edit " << j << '\n';
-                        std::cout << "      from_length: " << edit.from_length() << '\n';
-                        std::cout << "      to_length: " << edit.to_length() << '\n';
-                        if (!edit.sequence().empty()) {
-                            std::cout << "      sequence: " << edit.sequence() << '\n';
-                        }
-                    }
-                    std::cout << '\n';
-                }
-
-                std::cout << "Node path: ";
-                for (int i = 0; i < path.mapping_size(); ++i) {
-                    const vg::Position &position = path.mapping(i).position();
-                    std::cout << (position.is_reverse() ? '<' : '>') << position.node_id();
-                }
-                std::cout << '\n';
-
-                return true;
-            }
-        }
-    } catch (const std::exception &error) {
-        std::cerr << "Error while reading GAM file: " << error.what() << '\n';
-        return false;
-    }
-
-    std::cerr << "The GAM file contains no alignments.\n";
-    return false;
 }

@@ -21,25 +21,6 @@
 
 namespace {
     constexpr std::size_t GAM_BATCH_SIZE = 2048;
-    constexpr int GAM_DECOMPRESSION_THREADS = 4;
-
-    /**
-     * @brief Calcule la couverture GAM et retourne les statistiques de mapping.
-     */
-    [[nodiscard]]
-    GamMappingStats processGam(
-        const std::string &gam_path,
-        const cdx::Nid nid_min,
-        std::vector<cdx::Coverage> &target
-    ) {
-        return process_gam(
-            gam_path,
-            target,
-            nid_min,
-            GAM_BATCH_SIZE,
-            GAM_DECOMPRESSION_THREADS
-        );
-    }
 
     [[nodiscard]]
     GamMappingStats runGlobalPipeline(const CliArgs &args) {
@@ -52,10 +33,13 @@ namespace {
         GamMappingStats mapping_stats;
         {
             cfg::ScopedTimer timer("processGam");
-            mapping_stats = processGam(
+            mapping_stats = process_gam(
                 args.gam_file,
+                data.node_coverage,
                 data.layout.graph_nid_min,
-                data.node_coverage
+                GAM_BATCH_SIZE,
+                args.decompression_threads,
+                args.worker_threads
             );
         }
 
@@ -85,6 +69,8 @@ namespace {
 
         if (args.generateTable()) {
             cfg::ScopedTimer timer("writeCoverageTsvGlobal");
+            int total_threads = args.decompression_threads + args.worker_threads;
+
             output::writeCoverageTsvGlobal(
                 out_dir / cfg::NAME_TSV_FILE,
                 flat_bp_coverage,
@@ -95,12 +81,16 @@ namespace {
 
         if (args.generateStats()) {
             cfg::ScopedTimer timer("writeStatsReportGlobal");
+
+            int total_threads = args.decompression_threads + args.worker_threads;
+
             output::writeStatsReportGlobal(
                 out_dir / cfg::NAME_STATS_FILE,
                 flat_bp_coverage,
                 bp_component_offsets,
                 data.layout.component_names,
-                mapping_stats
+                mapping_stats,
+                total_threads
             );
         }
 
@@ -113,7 +103,7 @@ namespace {
         const std::size_t target_cid
     ) {
         // Conversion de la plage optionnelle issue des arguments CLI
-        std::optional<std::pair<std::int64_t, std::int64_t> > query_range = std::nullopt;
+        std::optional<std::pair<std::int64_t, std::int64_t>> query_range = std::nullopt;
         if (args.query && args.query->range) {
             query_range = std::make_pair(
                 args.query->range->start,
@@ -137,10 +127,13 @@ namespace {
         GamMappingStats mapping_stats;
         {
             cfg::ScopedTimer timer("processGam");
-            mapping_stats = processGam(
+            mapping_stats = process_gam(
                 args.gam_file,
+                data.node_coverage,
                 data.component.nid_min,
-                data.node_coverage
+                GAM_BATCH_SIZE,
+                args.decompression_threads,
+                args.worker_threads
             );
         }
 
@@ -169,6 +162,7 @@ namespace {
 
         if (args.generateTable()) {
             cfg::ScopedTimer timer("writeCoverageTsvQuery");
+
             output::writeCoverageTsvQuery(
                 out_dir / cfg::NAME_TSV_FILE,
                 bp_coverage,
