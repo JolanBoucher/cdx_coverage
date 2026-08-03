@@ -5,6 +5,7 @@
 #ifndef GAM_IO_H
 #define GAM_IO_H
 
+#include "cdx_types.h"
 #include <string>
 #include <vector>
 #include <cstdint>
@@ -19,19 +20,19 @@
  * - Thread-local vectors are reduced in parallel at the end to prevent mutex contention.
  *
  * @param gam_file Path to the input .gam file.
- * @param global_coverage Output vector storing total read coverage per node ID.
+ * @param target
+ * @param nid_min
  * @param read_count Output reference updated with total reads processed.
- * @param max_node_id Maximum node ID expected (used to size coverage arrays).
  * @param batch_size Number of GAM alignments packaged per OpenMP task (default: 512).
  * @param decompression_threads BGZF decompression threads for libvgio (default: 4).
  */
-void process_gam_fast(
+void process_gam(
     const std::string& gam_file,
-    std::vector<uint32_t>& global_coverage,
-    uint64_t& read_count,
-    std::size_t max_node_id,
-    std::size_t batch_size = 512,
-    int decompression_threads = 3
+    std::vector<cdx::Coverage>& target,
+    cdx::Nid nid_min,
+    std::uint64_t& read_count,
+    std::size_t batch_size,
+    int decompression_threads
 );
 
 /**

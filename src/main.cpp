@@ -1,16 +1,17 @@
 #include "cdx_loader.h"
+#include "cli.hpp"
 #include "config.h"
 #include "cov_projection.h"
 #include "gam_io.h"
 #include "output_coverage.h"
 #include "output_stats.h"
+#include "query_resolver.h"
 
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
 #include <filesystem>
 #include <iostream>
-#include <limits>
 #include <map>
 #include <optional>
 #include <stdexcept>
@@ -20,122 +21,57 @@
 
 namespace {
 
-// ================================================================
-// MANUAL CONFIGURATION
-// ================================================================
-
-const std::filesystem::path CDX_PATH = "./bio-file/yeast.cdx";
-const std::filesystem::path GAM_PATH = "./bio-file/yeast_tiny.gam";
-const std::filesystem::path OUTPUT_DIRECTORY = "./output";
-
-// Set to std::nullopt for whole-graph mode.
-// Set to a component ID, for example cdx::Cid{0}, for query mode.
-constexpr std::optional<cdx::Cid> COMPONENT_ID = std::nullopt;
-
-// Inclusive query coordinates used only in query mode.
-// std::nullopt means the complete component.
-constexpr std::optional<std::pair<std::int64_t, std::int64_t>> QUERY_RANGE = std::nullopt;
-
-// Allows start > end for a circular origin-crossing query.
-constexpr bool CIRCULAR = false;
+using MappingStats = std::map<std::string, std::uint64_t>;
 
 constexpr std::size_t GAM_BATCH_SIZE = 2048;
 constexpr int GAM_DECOMPRESSION_THREADS = 4;
 
-const std::filesystem::path TSV_OUTPUT = OUTPUT_DIRECTORY / "tsv_coverage.tsv";
-const std::filesystem::path STATS_OUTPUT = OUTPUT_DIRECTORY / "stats_coverage.txt";
-
-using MappingStats = std::map<std::string, std::uint64_t>;
-
 /**
- * @brief Copies absolute-node GAM coverage into a relative nid-space CDX table.
+ * @brief Calcule directement la couverture GAM dans l'espace local CDX.
  *
- * Sentinel entries in the target table are preserved. Only active entries whose
- * value is below cfg::NOT_IN_QUERY receive coverage values.
+ * @param gam_path Chemin vers le fichier GAM.
+ * @param nid_min Premier node ID global représenté par target.
+ * @param target Vecteur local de couverture CDX. Les valeurs NOT_IN_QUERY
+ *               sont conservées et ignorées pendant le calcul.
+ * @param mapping_stats Statistiques de mapping.
  */
-void transferGamCoverage(
-    const std::vector<std::uint32_t>& absolute_coverage,
+void processGam(
+    const std::string& gam_path,
     const cdx::Nid nid_min,
-    std::vector<cdx::Coverage>& target
-) {
-    for (std::size_t node_offset = 0;
-         node_offset < target.size();
-         ++node_offset) {
-        if (target[node_offset] >= cfg::NOT_IN_QUERY) {
-            continue;
-        }
-
-        const cdx::Nid node_id =
-            nid_min + static_cast<cdx::Nid>(node_offset);
-
-        if (node_id >=
-            static_cast<cdx::Nid>(absolute_coverage.size())) {
-            continue;
-        }
-
-        target[node_offset] =
-            absolute_coverage[static_cast<std::size_t>(node_id)];
-    }
-}
-
-/**
- * @brief Processes the GAM file and returns coverage indexed by absolute node ID.
- */
-[[nodiscard]]
-std::vector<std::uint32_t> processGam(
-    const cdx::Nid maximum_node_id,
+    std::vector<cdx::Coverage>& target,
     MappingStats& mapping_stats
 ) {
-    if (maximum_node_id >
-        static_cast<cdx::Nid>(
-            std::numeric_limits<std::size_t>::max()
-        )) {
-        throw std::overflow_error(
-            "Maximum node ID exceeds size_t capacity."
-        );
-    }
-
-    std::vector<std::uint32_t> gam_coverage;
     std::uint64_t read_count = 0;
 
-    process_gam_fast(
-        GAM_PATH.string(),
-        gam_coverage,
+    process_gam(
+        gam_path,
+        target,
+        nid_min,
         read_count,
-        maximum_node_id,
         GAM_BATCH_SIZE,
         GAM_DECOMPRESSION_THREADS
     );
 
-    // Temporary interpretation of process_gam_fast's read_count.
-    // Adapt these fields if gam_io later exposes mapped/unmapped counters.
     mapping_stats["total"] = read_count;
     mapping_stats["mapped"] = read_count;
     mapping_stats["mapped_to_query"] = 0;
     mapping_stats["unmapped"] = 0;
-
-    return gam_coverage;
 }
 
-void runGlobalPipeline(MappingStats& mapping_stats) {
+void runGlobalPipeline(const CliArgs& args, MappingStats& mapping_stats) {
     cdx::GlobalData data;
     {
         cfg::ScopedTimer timer("loadGlobal");
-        data = cdx::loadGlobal(CDX_PATH);
+        data = cdx::loadGlobal(args.cdx_file);
     }
 
-    std::vector<std::uint32_t> gam_coverage;
     {
         cfg::ScopedTimer timer("processGam");
-        gam_coverage = processGam(data.layout.graph_nid_max, mapping_stats);
-    }
-
-    {
-        cfg::ScopedTimer timer("transferGamCoverage");
-        transferGamCoverage(
-            gam_coverage,
+        processGam(
+            args.gam_file,
             data.layout.graph_nid_min,
-            data.node_coverage
+            data.node_coverage,
+            mapping_stats
         );
     }
 
@@ -161,20 +97,22 @@ void runGlobalPipeline(MappingStats& mapping_stats) {
         );
     }
 
-    {
+    const std::filesystem::path out_dir(args.output_directory);
+
+    if (args.generateTable()) {
         cfg::ScopedTimer timer("writeCoverageTsvGlobal");
         output::writeCoverageTsvGlobal(
-            TSV_OUTPUT,
+            out_dir / cfg::NAME_TSV_FILE,
             flat_bp_coverage,
             bp_component_offsets,
             data.layout.component_names
         );
     }
 
-    {
+    if (args.generateStats()) {
         cfg::ScopedTimer timer("writeStatsReportGlobal");
         output::writeStatsReportGlobal(
-            STATS_OUTPUT,
+            out_dir / cfg::NAME_STATS_FILE,
             flat_bp_coverage,
             bp_component_offsets,
             data.layout.component_names,
@@ -183,36 +121,47 @@ void runGlobalPipeline(MappingStats& mapping_stats) {
     }
 }
 
-void runQueryPipeline(MappingStats& mapping_stats) {
-    if (!COMPONENT_ID) {
-        throw std::logic_error(
-            "Query mode requires COMPONENT_ID."
+void runQueryPipeline(
+    const CliArgs& args,
+    std::size_t target_cid,
+    MappingStats& mapping_stats
+) {
+    // Conversion de la plage optionnelle issue des arguments CLI
+    std::optional<std::pair<std::int64_t, std::int64_t>> query_range = std::nullopt;
+    if (args.query && args.query->range) {
+        query_range = std::make_pair(
+            args.query->range->start,
+            args.query->range->end
         );
     }
+
+    if (query_range) {
+        std::cerr << "[DEBUG] - Query range: "
+                  << query_range->first << ':' << query_range->second << '\n';
+    } else {
+        std::cerr << "[DEBUG] - Query range: entire component\n";
+    }
+
+    const bool is_circular = (args.component_type == ComponentType::Circular);
 
     cdx::QueryData data;
     {
         cfg::ScopedTimer timer("loadQuery");
         data = cdx::loadQuery(
-            CDX_PATH,
-            *COMPONENT_ID,
-            QUERY_RANGE,
-            CIRCULAR
+            args.cdx_file,
+            static_cast<cdx::Cid>(target_cid),
+            query_range,
+            is_circular
         );
     }
 
-    std::vector<std::uint32_t> gam_coverage;
     {
         cfg::ScopedTimer timer("processGam");
-        gam_coverage = processGam(data.component.nid_max, mapping_stats);
-    }
-
-    {
-        cfg::ScopedTimer timer("transferGamCoverage");
-        transferGamCoverage(
-            gam_coverage,
+        processGam(
+            args.gam_file,
             data.component.nid_min,
-            data.node_coverage
+            data.node_coverage,
+            mapping_stats
         );
     }
 
@@ -229,33 +178,29 @@ void runQueryPipeline(MappingStats& mapping_stats) {
     std::vector<cdx::Coverage> bp_coverage;
     {
         cfg::ScopedTimer timer("expandPosCovQuery");
-        bp_coverage = expandPosCovQuery(
-            idx_coverage,
-            data.idx2bp
-        );
+        bp_coverage = expandPosCovQuery(idx_coverage, data.idx2bp);
     }
 
     {
         cfg::ScopedTimer timer("trimCoverageToQuery");
-        bp_coverage = trimCoverageToQuery(
-            bp_coverage,
-            data.query_range_bp
-        );
+        bp_coverage = trimCoverageToQuery(bp_coverage, data.query_range_bp);
     }
 
-    {
+    const std::filesystem::path out_dir(args.output_directory);
+
+    if (args.generateTable()) {
         cfg::ScopedTimer timer("writeCoverageTsvQuery");
         output::writeCoverageTsvQuery(
-            TSV_OUTPUT,
+            out_dir / cfg::NAME_TSV_FILE,
             bp_coverage,
             data.component.compo_name
         );
     }
 
-    {
+    if (args.generateStats()) {
         cfg::ScopedTimer timer("writeStatsReportQuery");
         output::writeStatsReportQuery(
-            STATS_OUTPUT,
+            out_dir / cfg::NAME_STATS_FILE,
             mapping_stats,
             bp_coverage,
             data.component.compo_name
@@ -265,22 +210,41 @@ void runQueryPipeline(MappingStats& mapping_stats) {
 
 } // anonymous namespace
 
-int main() {
+int main(int argc, char** argv) {
     try {
         cfg::ScopedTimer total_timer("TOTAL PROGRAM");
 
-        std::filesystem::create_directories(
-            OUTPUT_DIRECTORY
-        );
+        // 1. Parsing CLI
+        CliArgs args = parse_args(argc, argv);
 
-        if (!std::filesystem::is_directory(
-                OUTPUT_DIRECTORY)) {
-            throw std::runtime_error(
-                "Output path is not a directory: " +
-                OUTPUT_DIRECTORY.string()
-            );
+        std::filesystem::create_directories(args.output_directory);
+
+        // 2. Chargement léger de la métadonnée CDX pour alimenter le resolver
+        ComponentResolver resolver;
+        {
+            cdx::GlobalData meta_data = cdx::loadGlobal(args.cdx_file);
+            for (std::size_t cid = 0; cid < meta_data.layout.component_names.size(); ++cid) {
+                resolver.register_component(cid, meta_data.layout.component_names[cid]);
+            }
         }
 
+        // 3. Traitement du MODE INSPECT
+        if (args.inspectMode()) {
+            if (args.inspect.component.has_value()) {
+                ResolvedComponent resolved = resolver.resolve(*args.inspect.component);
+                std::cout << "Component Inspection:\n"
+                          << "  CID  : " << resolved.cid << "\n"
+                          << "  Name : " << resolved.name << "\n";
+            } else {
+                std::cout << "CDX Index contains " << resolver.size() << " components.\n";
+                for (std::size_t cid = 0; cid < resolver.size(); ++cid) {
+                    std::cout << "  - CID " << cid << " : " << resolver.get_name(cid) << "\n";
+                }
+            }
+            return 0;
+        }
+
+        // 4. Traitement du PIPELINE DE COUVERTURE
         MappingStats mapping_stats{
             {"total", 0},
             {"mapped", 0},
@@ -288,35 +252,22 @@ int main() {
             {"unmapped", 0}
         };
 
-        if (COMPONENT_ID) {
-            runQueryPipeline(mapping_stats);
-        }
-        else {
-            runGlobalPipeline(mapping_stats);
+        if (args.query.has_value()) {
+            ResolvedComponent resolved = resolver.resolve(args.query->component);
+
+            std::clog << "[INFO] Query target resolved: '" << args.query->component
+                      << "' -> CID " << resolved.cid << " (" << resolved.name << ")\n";
+
+            runQueryPipeline(args, resolved.cid, mapping_stats);
+        } else {
+            runGlobalPipeline(args, mapping_stats);
         }
 
-        std::cout
-            << "Coverage TSV written to: "
-            << TSV_OUTPUT
-            << '\n'
-            << "Coverage statistics written to: "
-            << STATS_OUTPUT
-            << '\n';
-
+        std::cout << "Processing completed successfully.\n";
         return 0;
-    }
-    catch (const std::exception& error) {
-        std::cerr
-            << "Error: "
-            << error.what()
-            << '\n';
 
+    } catch (const std::exception& error) {
+        std::cerr << "Error: " << error.what() << '\n';
         return 1;
     }
 }
-
-//TODO optimisation de output_tsv et de output_stats qui sont
-// pas très performant pour l'instant. mangent (30 à 50%) du temps en release plus autour de 65% en debug
-// on peut tenté de parallélisé tsv, mais faut voir ou est le goulot en cpu ou en IO avant sinon ya bcp d'autre tour
-// de passe-passe pour optimisé avant
-// le stats va être un peut plus de modifier l'algo je crois peut-être potentiel de parallelization

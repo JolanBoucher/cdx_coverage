@@ -651,72 +651,72 @@ namespace cdx {
      * @throws std::runtime_error If the file cannot be opened or if underlying reader passes fail.
      */
     [[nodiscard]] GlobalData loadGlobal(const std::filesystem::path &cdx_path) {
-    GlobalData global_data;
+        GlobalData global_data;
 
-    // 1. Open the binary CDX stream.
-    std::ifstream cdx_stream(cdx_path, std::ios::binary);
-    if (!cdx_stream) {
-        throw std::runtime_error("Unable to open CDX file: " + cdx_path.string());
-    }
-
-    // 2. Extract graph-wide metadata, component boundaries, and component names.
-    GraphLayout layout = computeGraphLayout(cdx_stream);
-
-    // 3. Build the dense node-ID to flat-index translation table.
-    global_data.nid2flat_idx = buildNid2FlatIdxGlobal(
-        cdx_stream,
-        layout.graph_nid_min,
-        layout.graph_nid_max,
-        layout.component_offsets
-    );
-
-    // 4. Initialize the global coverage table in relative nid-space.
-    global_data.node_coverage = buildCovTableGlobal(global_data.nid2flat_idx);
-
-    // 5. Build concatenated component-local idx-to-bp tables and store them directly.
-    auto [idx2bp, idx2bp_offsets] = buildIdx2PosGlobal(
-        cdx_stream,
-        static_cast<Cid>(layout.component_count)
-    );
-
-    global_data.idx2bp = std::move(idx2bp);
-    global_data.idx2bp_offsets = std::move(idx2bp_offsets);
-
-    // Validation post-move
-    if (global_data.idx2bp_offsets.size() != layout.component_count + 1) {
-        throw std::runtime_error("idx2bp offset count does not match the number of CDX components.");
-    }
-
-    // 6. Extract each component's total bp length using global_data fields.
-    global_data.component_lengths.reserve(layout.component_count);
-
-    for (std::size_t cid = 0; cid < layout.component_count; ++cid) {
-        const RecordCount end_offset = global_data.idx2bp_offsets[cid + 1];
-
-        if (end_offset == 0 || end_offset > static_cast<RecordCount>(global_data.idx2bp.size())) {
-            throw std::runtime_error(
-                "Invalid idx2bp boundary for component " + std::to_string(cid) + "."
-            );
+        // 1. Open the binary CDX stream.
+        std::ifstream cdx_stream(cdx_path, std::ios::binary);
+        if (!cdx_stream) {
+            throw std::runtime_error("Unable to open CDX file: " + cdx_path.string());
         }
 
-        const auto end_index = static_cast<std::size_t>(end_offset);
+        // 2. Extract graph-wide metadata, component boundaries, and component names.
+        GraphLayout layout = computeGraphLayout(cdx_stream);
 
-        // The last element of each local prefix-sum table stores the total component length.
-        global_data.component_lengths.push_back(global_data.idx2bp[end_index - 1]);
-    }
+        // 3. Build the dense node-ID to flat-index translation table.
+        global_data.nid2flat_idx = buildNid2FlatIdxGlobal(
+            cdx_stream,
+            layout.graph_nid_min,
+            layout.graph_nid_max,
+            layout.component_offsets
+        );
 
-    // 7. Validate layout consistency.
-    if (layout.component_names.size() != layout.component_count) {
-        throw std::runtime_error("Component name count does not match the number of CDX components.");
-    }
-    if (global_data.component_lengths.size() != layout.component_count) {
-        throw std::logic_error("Component length count does not match the number of CDX components.");
-    }
+        // 4. Initialize the global coverage table in relative nid-space.
+        global_data.node_coverage = buildCovTableGlobal(global_data.nid2flat_idx);
 
-    // 8. Move layout to data structure and return.
-    global_data.layout = std::move(layout);
-    return global_data;
-}
+        // 5. Build concatenated component-local idx-to-bp tables and store them directly.
+        auto [idx2bp, idx2bp_offsets] = buildIdx2PosGlobal(
+            cdx_stream,
+            static_cast<Cid>(layout.component_count)
+        );
+
+        global_data.idx2bp = std::move(idx2bp);
+        global_data.idx2bp_offsets = std::move(idx2bp_offsets);
+
+        // Validation post-move
+        if (global_data.idx2bp_offsets.size() != layout.component_count + 1) {
+            throw std::runtime_error("idx2bp offset count does not match the number of CDX components.");
+        }
+
+        // 6. Extract each component's total bp length using global_data fields.
+        global_data.component_lengths.reserve(layout.component_count);
+
+        for (std::size_t cid = 0; cid < layout.component_count; ++cid) {
+            const RecordCount end_offset = global_data.idx2bp_offsets[cid + 1];
+
+            if (end_offset == 0 || end_offset > static_cast<RecordCount>(global_data.idx2bp.size())) {
+                throw std::runtime_error(
+                    "Invalid idx2bp boundary for component " + std::to_string(cid) + "."
+                );
+            }
+
+            const auto end_index = static_cast<std::size_t>(end_offset);
+
+            // The last element of each local prefix-sum table stores the total component length.
+            global_data.component_lengths.push_back(global_data.idx2bp[end_index - 1]);
+        }
+
+        // 7. Validate layout consistency.
+        if (layout.component_names.size() != layout.component_count) {
+            throw std::runtime_error("Component name count does not match the number of CDX components.");
+        }
+        if (global_data.component_lengths.size() != layout.component_count) {
+            throw std::logic_error("Component length count does not match the number of CDX components.");
+        }
+
+        // 8. Move layout to data structure and return.
+        global_data.layout = std::move(layout);
+        return global_data;
+    }
 
     void inspectComponent(
         const std::filesystem::path &cdx_path,
