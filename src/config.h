@@ -2,6 +2,7 @@
 #ifndef CDX_COVERAGE_CONFIG_H
 #define CDX_COVERAGE_CONFIG_H
 
+#include <chrono>
 #include <cstdint>
 #include <iostream>
 #include <string_view>
