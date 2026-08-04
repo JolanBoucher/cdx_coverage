@@ -110,6 +110,14 @@ recommended; the CI workflow (`.github/workflows/ubuntu.yml`) pulls GCC 11
 from the `ubuntu-toolchain-r/test` PPA on 20.04 specifically. On 22.04+ the
 default GCC is new enough and no extra step is needed.
 
+> **Abseil:** Ubuntu's packaged `libabsl-dev` predates Abseil's Logging
+> library (`absl::log_internal_message` / `absl::log_internal_check_op`,
+> added in the `20230802` LTS release), which `CMakeLists.txt` links
+> against. Do **not** rely on `libabsl-dev` from apt — build a recent
+> Abseil (`>= 20230802`) from source and install it instead (see
+> `.github/workflows/ubuntu.yml` for the exact commands used in CI), or
+> use a distro/PPA that ships one.
+
 ```bash
 sudo apt update
 sudo apt install -y \
@@ -119,7 +127,6 @@ sudo apt install -y \
     pkg-config \
     protobuf-compiler \
     libprotobuf-dev \
-    libabsl-dev \
     libhts-dev \
     libomp-dev \
     libcairo2-dev \
