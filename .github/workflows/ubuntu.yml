@@ -1,0 +1,98 @@
+name: Ubuntu Build
+
+on:
+  workflow_dispatch:
+  push:
+  pull_request:
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        # Ubuntu 20.04 is the minimum supported version;
+        # 24.04 is kept alongside it to catch regressions on newer toolchains.
+        os: [ubuntu-20.04, ubuntu-24.04]
+
+    runs-on: ${{ matrix.os }}
+
+    steps:
+      # Checked out into its own subdirectory (not the workspace root) so
+      # that cdx_lib below can be checked out as a true sibling directory.
+      - name: Checkout cdx_coverage
+        uses: actions/checkout@v4
+        with:
+          path: cdx_coverage
+          submodules: recursive
+          fetch-depth: 0
+
+      # cdx_lib is not a Git submodule of this repo: CMakeLists.txt expects
+      # it checked out as a sibling directory, `../cdx_lib` relative to
+      # cdx_coverage (see README > Requirements > Build-time dependencies).
+      - name: Checkout cdx_lib (sibling checkout)
+        uses: actions/checkout@v4
+        with:
+          repository: JolanBoucher/cdx_lib
+          path: cdx_lib
+
+      - name: Install dependencies
+        run: |
+          sudo apt update
+          sudo apt install -y \
+            build-essential \
+            cmake \
+            git \
+            pkg-config \
+            protobuf-compiler \
+            libprotobuf-dev \
+            libabsl-dev \
+            libhts-dev \
+            libomp-dev \
+            libcairo2-dev \
+            zlib1g-dev
+
+      # CLI11 packaging varies by Ubuntu release; fall back to the
+      # single-header release if libcli11-dev isn't available (see README).
+      - name: Install CLI11
+        run: |
+          if sudo apt install -y libcli11-dev; then
+            echo "Installed libcli11-dev from apt"
+          else
+            echo "libcli11-dev not available, fetching single-header CLI11"
+            mkdir -p include/CLI
+            curl -L -o include/CLI/CLI.hpp \
+              https://github.com/CLIUtils/CLI11/releases/latest/download/CLI11.hpp
+          fi
+        working-directory: cdx_coverage
+
+      # Ubuntu 20.04's default GCC is 9.4; pull GCC 11 from the toolchain
+      # PPA for a more robust C++17 baseline on the oldest supported OS.
+      - name: Install GCC 11 (Ubuntu 20.04 only)
+        if: matrix.os == 'ubuntu-20.04'
+        run: |
+          sudo apt install -y software-properties-common
+          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
+          sudo apt update
+          sudo apt install -y gcc-11 g++-11
+          echo "CC=gcc-11" >> "$GITHUB_ENV"
+          echo "CXX=g++-11" >> "$GITHUB_ENV"
+
+      - name: Show toolchain versions
+        run: |
+          ${CXX:-g++} --version
+          cmake --version
+
+      - name: Configure
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+        working-directory: cdx_coverage
+
+      - name: Build
+        run: |
+          cmake --build build -j"$(nproc)"
+        working-directory: cdx_coverage
+
+      - name: Smoke test
+        run: |
+          ./build/cdx_coverage --help
+        working-directory: cdx_coverage
