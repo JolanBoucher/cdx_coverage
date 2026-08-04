@@ -6,6 +6,8 @@
 #include <vg/io/message_iterator.hpp>
 #include <vg/io/registry.hpp>
 
+#include <google/protobuf/arena.h>
+
 #include <algorithm>
 #include <atomic>
 #include <cstdint>
@@ -105,15 +107,28 @@ GamMappingStats process_gam(
                             std::uint32_t *const coverage = local_coverages[tid].data();
 
                             GamMappingStats task_stats;
-                            vg::Alignment alignment;
+
+                            // One arena per task/batch: every vg::Alignment
+                            // parsed below is bump-allocated from it (its
+                            // deeply nested Path -> repeated Mapping ->
+                            // Position/Edit submessages included) instead of
+                            // going through malloc/free individually, and
+                            // everything is released in one bulk sweep when
+                            // the arena is destroyed at the end of the task -
+                            // no per-message Clear() traversal, no per-field
+                            // free(). batch_size (2048, cf. GAM_BATCH_SIZE in
+                            // main.cpp) bounds how much a single arena grows
+                            // to before being freed.
+                            google::protobuf::Arena arena;
 
                             for (const std::string &serialized: *owned_batch) {
                                 if (serialized.size() > static_cast<std::size_t>(std::numeric_limits<int>::max())) {
                                     continue;
                                 }
-                                alignment.Clear();
 
-                                if (!alignment.ParseFromArray(serialized.data(), static_cast<int>(serialized.size()))) {
+                                auto *alignment = google::protobuf::Arena::Create<vg::Alignment>(&arena);
+
+                                if (!alignment->ParseFromArray(serialized.data(), static_cast<int>(serialized.size()))) {
                                     continue;
                                 }
 
@@ -122,7 +137,7 @@ GamMappingStats process_gam(
                                 bool read_is_mapped = false;
                                 bool read_maps_to_query = false;
 
-                                const vg::Path &path = alignment.path();
+                                const vg::Path &path = alignment->path();
 
                                 for (int i = 0; i < path.mapping_size(); ++i) {
 

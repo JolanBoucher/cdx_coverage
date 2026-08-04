@@ -66,16 +66,8 @@ Package (one component or one query, already fully processed):
 """
 
 import os
-import sys
-import time
-
-# Recorded before the heavy imports below (matplotlib/numpy/pycirclize),
-# which alone can take a second or more to import - that cost is invisible
-# to any timer started inside main(), but very real when profiling why a
-# single render "feels slow". See _Stopwatch / CDX_CIRCULAR_PLOT_TIMING.
-_IMPORT_START = time.perf_counter()
-
 import struct
+import sys
 from pathlib import Path
 
 import matplotlib
@@ -86,34 +78,6 @@ import matplotlib.image as mpimg
 import matplotlib.pyplot as plt
 import numpy as np
 from pycirclize import Circos
-
-# Set CDX_CIRCULAR_PLOT_TIMING=1 (any non-empty value) to print a per-stage
-# timing breakdown to stderr - forwarded by python_circular_plot.cpp even on
-# success (normally only shown on failure). The fastest way to see where
-# time actually goes on a slow render (e.g. a large global grid with many
-# components) before guessing at optimizations.
-_TIMING_ENABLED = bool(os.environ.get("CDX_CIRCULAR_PLOT_TIMING"))
-
-
-class _Stopwatch:
-    """Tiny opt-in stage timer; a no-op unless _TIMING_ENABLED."""
-
-    def __init__(self, start: float | None = None):
-        self._start = start if start is not None else time.perf_counter()
-        self._last = self._start
-
-    def lap(self, label: str) -> None:
-        if not _TIMING_ENABLED:
-            return
-        now = time.perf_counter()
-        print(f"[circular_plot.py] {label}: {now - self._last:.3f}s", file=sys.stderr)
-        self._last = now
-
-    def total(self, label: str = "total") -> None:
-        if not _TIMING_ENABLED:
-            return
-        now = time.perf_counter()
-        print(f"[circular_plot.py] {label}: {now - self._start:.3f}s", file=sys.stderr)
 
 
 # ---------------------------------------------------------------------------
@@ -393,7 +357,7 @@ def _plot_circular_graph(axis, pkg: dict, query_mode: bool, line_color: str, fil
 # Entry points
 # ---------------------------------------------------------------------------
 
-def _render_query(request: dict, output_png: Path, stopwatch: _Stopwatch) -> None:
+def _render_query(request: dict, output_png: Path) -> None:
     figure = plt.figure(figsize=(request["fig_width"], request["fig_height"]), dpi=request["dpi"])
     axis = figure.add_subplot(1, 1, 1, projection="polar")
 
@@ -404,12 +368,10 @@ def _render_query(request: dict, output_png: Path, stopwatch: _Stopwatch) -> Non
         line_color=request["line_color"],
         fill_color=request["fill_color"],
     )
-    stopwatch.lap("draw panel")
 
     figure.tight_layout()
     try:
         figure.savefig(output_png, dpi=request["dpi"], bbox_inches="tight", facecolor="white")
-        stopwatch.lap("savefig")
     finally:
         plt.close(figure)
 
@@ -453,7 +415,7 @@ def _render_panel_worker(args: tuple) -> str | None:
     return panel_path
 
 
-def _render_global(request: dict, output_png: Path, work_dir: Path, stopwatch: _Stopwatch) -> None:
+def _render_global(request: dict, output_png: Path, work_dir: Path) -> None:
     packages = request["packages"]
     rows, columns = request["rows"], request["columns"]
     component_count = len(packages)
@@ -480,8 +442,6 @@ def _render_global(request: dict, output_png: Path, work_dir: Path, stopwatch: _
         with multiprocessing.Pool(processes=worker_count) as pool:
             panel_paths = pool.map(_render_panel_worker, tasks)
 
-    stopwatch.lap(f"draw {component_count} panels ({worker_count} worker process(es))")
-
     # Composite panels into the final grid via matplotlib's own PNG
     # reader/writer (no Pillow dependency needed - PNG doesn't require it).
     # White background so empty trailing grid cells and invisible/masked
@@ -500,10 +460,7 @@ def _render_global(request: dict, output_png: Path, work_dir: Path, stopwatch: _
         top, left = row * panel_px, col * panel_px
         canvas[top:top + height, left:left + width, :] = panel
 
-    stopwatch.lap("composite grid")
-
     mpimg.imsave(output_png, canvas)
-    stopwatch.lap("savefig")
 
 
 def main() -> int:
@@ -511,22 +468,17 @@ def main() -> int:
         print(f"Usage: {sys.argv[0]} <input.bin> <output.png>", file=sys.stderr)
         return 2
 
-    stopwatch = _Stopwatch(start=_IMPORT_START)
-    stopwatch.lap("interpreter startup + imports")
-
     input_path = Path(sys.argv[1])
     output_png = Path(sys.argv[2])
 
     request = _load_request(input_path)
     output_png.parent.mkdir(parents=True, exist_ok=True)
-    stopwatch.lap("load request")
 
     if request["mode"] == "query":
-        _render_query(request, output_png, stopwatch)
+        _render_query(request, output_png)
     else:
-        _render_global(request, output_png, input_path.parent, stopwatch)
+        _render_global(request, output_png, input_path.parent)
 
-    stopwatch.total()
     return 0
 
 

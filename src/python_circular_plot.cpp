@@ -50,7 +50,6 @@
 #include <exception>
 #include <filesystem>
 #include <fstream>
-#include <iostream>
 #include <iomanip>
 #include <limits>
 #include <mutex>
@@ -456,13 +455,6 @@ namespace output {
         /**
          * @brief Invokes `python3 circular_plot.py <request.bin> <output.png>`
          *        and captures stdout/stderr for diagnostics on failure.
-         *
-         *        Set CDX_CIRCULAR_PLOT_TIMING=1 to have circular_plot.py print
-         *        a per-stage timing breakdown (request load, per-panel prep,
-         *        drawing, savefig) to stderr, forwarded here even on success
-         *        (normally only shown on failure) - the fastest way to see
-         *        where time actually goes on a slow render (e.g. a large
-         *        global grid) before guessing at optimizations.
          */
         void runCircularPlotScriptOrThrow(
             const std::filesystem::path &script_path,
@@ -470,7 +462,6 @@ namespace output {
             const std::filesystem::path &output_png
         ) {
             const std::string python_executable = resolvePythonExecutable();
-            const bool timing_requested = std::getenv("CDX_CIRCULAR_PLOT_TIMING") != nullptr;
 
             std::ostringstream command;
             command << std::quoted(python_executable) << ' '
@@ -505,10 +496,6 @@ namespace output {
                     "Request file: " + request_path.string() + "\n"
                     "--- python output ---\n" + captured_output
                 );
-            }
-
-            if (timing_requested && !captured_output.empty()) {
-                std::cerr << "--- circular_plot.py timing ---\n" << captured_output;
             }
 
             if (!std::filesystem::exists(output_png)) {
