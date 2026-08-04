@@ -1,131 +1,150 @@
-# Circular graph runtime dependencies
+# Circular graph runtime setup
 
-`cdx_coverage` renders circular coverage graphs (`--component-type circular`)
-by invoking `python3` as a subprocess (via `popen`, in
-`src/python_circular_plot.cpp`) on a small standalone script,
-`python_script/circular_plot.py`, which uses
-[pycirclize](https://github.com/moshi4/pyCirclize) on top of matplotlib.
-This is a **runtime-only** dependency: no Python is required to compile
-`cdx_coverage`, and linear graphs (`--component-type linear`) never touch
-Python at all (pure C++/Cairo, in-process).
+`cdx_coverage` renders circular coverage graphs (`--component-type circular`
+/ `-c circular`) by invoking `python3` as a subprocess on a small,
+standalone rendering script, `python_script/circular_plot.py`, which draws
+Circos-style polar plots via [pycirclize](https://github.com/moshi4/pyCirclize)
+on top of matplotlib.
 
-`circular_plot.py` only handles the pycirclize/matplotlib rendering itself:
-all numeric preparation (downsampling, smoothing, log transform, tick math)
-runs in C++ (`src/python_circular_plot.cpp`), so the Python side stays thin
-and the CPU-bound work happens at C++ speed.
+This is the **only** part of `cdx_coverage` that touches Python, and only
+at runtime:
 
-## Install: automatic (default)
+- All coverage extraction, downsampling, smoothing, log-scale transforms,
+  and tick math run in C++ (`src/python_circular_plot.cpp`), reusing the
+  same numeric core as the linear (Cairo) backend. `circular_plot.py`
+  receives already-computed points and is responsible only for drawing them.
+- Linear graphs (`--component-type linear`, the default) never invoke
+  Python at all — they are rendered in-process via Cairo
+  (`src/cairo_plot.cpp`).
+- No Python is required to *compile* `cdx_coverage`.
 
-**Building `cdx_coverage` normally is enough** - you don't need to create or
-activate a venv yourself. If a Python 3 interpreter is found at CMake
-configure time, a `POST_BUILD` step (`cmake/setup_circular_env.sh`)
-provisions a private venv at `pyenv/` next to the built executable and
-installs `numpy`/`matplotlib`/`pycirclize` (see `python_script/requirements.txt`)
-into it automatically. `circular_plot.py` itself is copied next to the
-executable the same way. `cdx_coverage` prefers this bundled venv at
-runtime automatically (see "How the interpreter is resolved" below) - no
-environment variable, no manual step.
+## Automatic setup (default)
 
-This step requires network access at build time (to `pip install`). It is
-**best-effort and never fails the build**: on an offline machine, or if
-`python3 -m venv` isn't available, you'll see a warning during the build and
-circular graphs simply won't work until dependencies are installed some
-other way (see "Install: manual" below). Everything else (compiling, linear
-graphs) is unaffected.
+Building `cdx_coverage` normally is enough — there is no manual venv to
+create or activate. During the build:
 
-To force re-provisioning (e.g. after editing `requirements.txt`), delete the
-`pyenv/` directory next to the executable and rebuild.
+1. `circular_plot.py` is copied next to the built executable.
+2. If a Python 3 interpreter was found when CMake was configured, a
+   `cmake/setup_circular_env.sh` build step provisions a private virtual
+   environment (`pyenv/`, next to the executable) and installs
+   `numpy`, `matplotlib`, and `pycirclize` into it
+   (`python_script/requirements.txt`).
 
-## Install: manual (offline machines, custom setups, CI)
+At runtime, `cdx_coverage` prefers this bundled environment automatically
+(see [Interpreter resolution](#interpreter-resolution) below) — nothing
+further to configure.
+
+This step requires network access at build time (to `pip install`) and is
+**best-effort**: it never fails the build. On an offline machine, or if the
+`venv` module isn't available, you'll see a warning in the build log and
+circular graphs won't work until dependencies are made available some
+other way (see [Manual setup](#manual-setup)); everything else (compiling,
+linear graphs) is unaffected.
+
+To force re-provisioning (e.g. after editing `python_script/requirements.txt`),
+delete the `pyenv/` directory next to the executable and rebuild.
+
+## Manual setup
+
+Useful for offline builds, custom environments, or CI:
 
 ```bash
 python3 -m pip install numpy matplotlib pycirclize
 ```
 
-Any reasonably recent Python 3 (3.9+) works. There is no pinned version
-requirement. Verify with:
+Python 3.9+ is required; no other version is pinned. Verify with:
 
 ```bash
 python3 -c "import numpy, matplotlib, pycirclize; print('ok')"
 ```
 
-If this `python3` isn't the one `cdx_coverage` would otherwise pick, point
-it there explicitly with `CDX_PYTHON_EXECUTABLE` (see below).
+If this isn't the interpreter `cdx_coverage` would otherwise find, point it
+there explicitly with `CDX_PYTHON_EXECUTABLE` (below).
 
-## How the interpreter is resolved
+## Interpreter resolution
 
-`resolvePythonExecutable()` (in `src/python_circular_plot.cpp`) checks, in
-order:
+`cdx_coverage` picks which `python3` to invoke in this order:
 
-1. The `CDX_PYTHON_EXECUTABLE` environment variable, if set (explicit
-   override - point it at any interpreter binary).
-2. The bundled venv CMake provisions automatically (`pyenv/bin/python3`
-   next to the executable, see above) - this is what makes circular graphs
-   work out of the box after a normal build, no manual step.
+1. **`CDX_PYTHON_EXECUTABLE`** environment variable, if set — an explicit
+   override pointing at any interpreter binary.
+2. The bundled venv provisioned at build time (`pyenv/bin/python3`, next to
+   the executable).
 3. Plain `python3` resolved from the current process's `PATH`, as a last
-   resort (e.g. if provisioning was skipped or failed).
+   resort.
 
-## Running from an IDE (CLion, etc.)
+### Running from an IDE (CLion, etc.)
 
-If step 2 above didn't run (e.g. you're using an older build directory from
-before this feature existed, or provisioning failed - see the build log),
-`cdx_coverage` falls back to whatever `python3` is in `PATH`. That's the
-**process's own** `PATH`, not a login shell's: if you activate a virtualenv
-only through your shell profile (`~/.zshrc`, `~/.bashrc`) or
-`source venv/bin/activate` manually, that's invisible to a binary launched
-directly by an IDE - it runs fine from a terminal but fails with
-`ModuleNotFoundError: No module named 'pycirclize'` when run from CLion (or
-similar).
+If step 2 didn't run (e.g. an older build directory, or provisioning
+failed — check the build log) `cdx_coverage` falls back to whatever
+`python3` is in `PATH`. That's the **process's own** `PATH`, not a login
+shell's: a virtualenv activated only via a shell profile
+(`~/.zshrc`, `~/.bashrc`) or `source venv/bin/activate` is invisible to a
+binary launched directly by an IDE — it runs fine from a terminal but fails
+with `ModuleNotFoundError: No module named 'pycirclize'` when run from
+CLion (or similar).
 
-Fix: either rebuild so the bundled venv gets provisioned (simplest), or set
+Fix: rebuild so the bundled venv gets provisioned (simplest), or set
 `CDX_PYTHON_EXECUTABLE` explicitly in the IDE's run configuration:
 
 ```
 CDX_PYTHON_EXECUTABLE=/path/to/venv/bin/python3
 ```
 
-In CLion: *Run > Edit Configurations... > Environment variables* for the
-`cdx_coverage` target. This bypasses both the bundled venv and `PATH`
-resolution, and always uses that exact interpreter.
+In CLion: *Run > Edit Configurations… > Environment variables* for the
+`cdx_coverage` target.
 
-## How the script is located at runtime
+## Script resolution
 
-`resolveCircularPlotScript()` (in `src/python_circular_plot.cpp`) checks, in
-order:
+`cdx_coverage` locates `circular_plot.py` in this order:
 
-1. The `CDX_CIRCULAR_PLOT_SCRIPT` environment variable, if set (explicit
-   override — point it at any path).
+1. **`CDX_CIRCULAR_PLOT_SCRIPT`** environment variable, if set — an
+   explicit override pointing at any path.
 2. `circular_plot.py` next to the running executable (where CMake places
-   it, both in the build directory and after `install`).
-3. `python_script/circular_plot.py` in the source tree (dev convenience,
-   compiled in via `CDX_CIRCULAR_PLOT_SCRIPT_SOURCE_DIR`, for running the
-   binary directly out of a build directory before any install step).
+   it, both in the build directory and after `cmake --install`).
+3. `python_script/circular_plot.py` in the source tree — a development
+   convenience for running the binary directly from a build directory
+   before any install step.
 
-If none of these resolve, `cdx_coverage` raises a clear error naming the
-environment variable as the fastest fix.
+If none of these resolve, `cdx_coverage` raises an error naming
+`CDX_CIRCULAR_PLOT_SCRIPT` as the fastest fix.
+
+## Performance notes
+
+For a whole-graph view (`--component-type circular` without `-q/--query`),
+each component's panel is rendered independently and — since a single
+Python process can't parallelize CPU-bound matplotlib work across cores
+due to the GIL — in its own worker process (`multiprocessing.Pool`, sized
+to the number of available cores), then composited into the final grid.
+For a graph with many components, this is substantially faster than
+rendering panels one at a time.
+
+To see where time is spent on a specific run, set
+`CDX_CIRCULAR_PLOT_TIMING=1`. `circular_plot.py` will print a per-stage
+timing breakdown to stderr (interpreter startup/imports, request loading,
+per-panel drawing, grid compositing, PNG export), forwarded by
+`cdx_coverage` even on success (normally only shown on failure):
+
+```bash
+CDX_CIRCULAR_PLOT_TIMING=1 cdx_coverage graph.cdx reads.gam -c circular -o results/
+```
+
+Temporary working files (the binary request passed to Python, and — in
+whole-graph mode — the individual panel PNGs before compositing) are
+written next to the output file, under `<name>_circular_tmp/`, and removed
+automatically once the final PNG has been written successfully.
 
 ## Troubleshooting
 
-- **`Failed to launch python3 ...`**: `python3` is not in the `PATH` of the
-  shell/process running `cdx_coverage`. Install Python 3 or adjust `PATH`.
+- **`Failed to launch 'python3' ...`**: no working `python3` was found by
+  any of the steps in [Interpreter resolution](#interpreter-resolution).
+  Install Python 3, or set `CDX_PYTHON_EXECUTABLE`.
 - **`Circular plot rendering failed (exit status ...)`**: the captured
-  Python traceback is included directly in the exception message — the
-  usual cause is a missing package (`numpy`, `matplotlib`, or `pycirclize`)
-  or a coverage array that violates an invariant (e.g. mismatched lengths).
+  Python traceback is included directly in the error message. The usual
+  cause is a missing package (`numpy`, `matplotlib`, `pycirclize`) in
+  whichever interpreter was resolved, or a coverage array that violates an
+  internal invariant (e.g. mismatched lengths) — please report the latter
+  as a bug.
 - **`Cannot locate circular_plot.py`**: the script wasn't found next to the
-  executable and no source-tree fallback applies (e.g. you moved the binary
-  without also copying the script). Set `CDX_CIRCULAR_PLOT_SCRIPT` to its
-  full path.
-
-## Why Python only for circular graphs, not linear?
-
-Circos (the previous external tool for circular rendering) required a
-notoriously fragile install (Perl GD/libgd with PNG support compiled in,
-plus a separate `librsvg` conversion step — see the retired
-`CIRCOS_SETUP.md`) and, after many rounds of configuration fixes, still had
-persistent radial axis/gridline misalignment. pycirclize is a small,
-well-behaved Python library that already renders exactly the intended look
-(the original Python prototype used it), so a lightweight subprocess call
-is both simpler and more reliable than continuing to hand-roll Circos-style
-circular rendering in raw Cairo. Linear graphs don't have this problem —
-Cairo renders them directly, in-process, with no subprocess at all.
+  executable and no source-tree fallback applies (e.g. the binary was
+  moved without copying the script alongside it). Set
+  `CDX_CIRCULAR_PLOT_SCRIPT` to its full path.
