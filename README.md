@@ -103,7 +103,12 @@ a sibling directory (`../cdx_lib` relative to `cdx_coverage`).
 brew install cmake pkg-config protobuf abseil htslib libomp cairo cli11
 ```
 
-### Ubuntu 22.04 or newer
+### Ubuntu 20.04 or newer
+
+Ubuntu 20.04's default GCC (9.4) is old enough that a newer compiler is
+recommended; the CI workflow (`.github/workflows/ubuntu.yml`) pulls GCC 11
+from the `ubuntu-toolchain-r/test` PPA on 20.04 specifically. On 22.04+ the
+default GCC is new enough and no extra step is needed.
 
 ```bash
 sudo apt update
@@ -118,8 +123,12 @@ sudo apt install -y \
     libhts-dev \
     libomp-dev \
     libcairo2-dev \
+    libjansson-dev \
     zlib1g-dev
 ```
+
+`libjansson-dev` is required by the `libvgio` submodule (not by
+`cdx_coverage` directly).
 
 Package availability for CLI11 and Abseil varies by Ubuntu release. If
 `libcli11-dev` isn't available in your repositories, install CLI11 as a

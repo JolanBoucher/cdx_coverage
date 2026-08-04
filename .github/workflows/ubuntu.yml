@@ -49,6 +49,7 @@ jobs:
             libhts-dev \
             libomp-dev \
             libcairo2-dev \
+            libjansson-dev \
             zlib1g-dev
 
       # CLI11 packaging varies by Ubuntu release; fall back to the
