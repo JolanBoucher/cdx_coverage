@@ -7,9 +7,6 @@
 #include "output_stats.h"
 #include "query_resolver.h"
 
-// À activer lorsque le module existera.
-// #include "output_graph.h"
-
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
@@ -25,325 +22,387 @@
 #include <utility>
 #include <vector>
 
+#include "output_plot.h"
+
 namespace {
+    constexpr std::size_t GAM_BATCH_SIZE = 2048;
+    constexpr std::size_t TERMINAL_WIDTH = 77;
 
-constexpr std::size_t GAM_BATCH_SIZE = 2048;
-constexpr std::size_t TERMINAL_WIDTH = 77;
+    /**
+     * @brief Exécute le pipeline de couverture globale.
+     */
+    void runGlobalPipeline(const CliArgs &args) {
+        const int output_steps =
+                static_cast<int>(args.generateTable()) +
+                static_cast<int>(args.generateStats()) +
+                static_cast<int>(args.generateGraph());
 
-/**
- * @brief Exécute le pipeline de couverture globale.
- */
-void runGlobalPipeline(const CliArgs& args) {
-    const int output_steps =
-        static_cast<int>(args.generateTable()) +
-        static_cast<int>(args.generateStats()) +
-        static_cast<int>(args.generateGraph());
+        const int total_steps = 3 + output_steps;
+        int current_step = 1;
 
-    const int total_steps = 3 + output_steps;
-    int current_step = 1;
-
-    // ============================================================
-    // STEP 1: CDX Loading
-    // ============================================================
-    std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] CDX Loading\n";
-    cdx::GlobalData data;
-
-    {
-        cfg::ScopedTimer timer("Global CDX data loaded");
-        data = cdx::loadGlobal(args.cdx_file);
-        timer.update_name("Whole pangenome loaded");
-    }
-
-    // ============================================================
-    // STEP 2: GAM Processing
-    // ============================================================
-    std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] GAM Processing\n";
-    GamMappingStats mapping_stats;
-
-    {
-        cfg::ScopedTimer timer("GAM alignments processed");
-
-        mapping_stats = process_gam(
-            args.gam_file,
-            data.node_coverage,
-            data.layout.graph_nid_min,
-            GAM_BATCH_SIZE,
-            args.decompression_threads,
-            args.worker_threads
-        );
-
-        timer.update_name("Processed " + cfg::formatInteger(mapping_stats.total) + " reads");
-    }
-
-    // ============================================================
-    // STEP 3: Coverage Projection
-    // ============================================================
-    std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Genomic Coordinate Projection\n";
-    std::vector<cdx::Coverage> flat_idx_coverage;
-
-    {
-        cfg::ScopedTimer timer("Node coverage projected to component index space");
-
-        flat_idx_coverage = projectCov2IdxGlobal(
-            data.node_coverage,
-            data.nid2flat_idx,
-            data.layout.component_offsets
-        );
-    }
-
-    std::vector<cdx::Coverage> flat_bp_coverage;
-    std::vector<cdx::PosBp> bp_component_offsets;
-
-    {
-        cfg::ScopedTimer timer("Index coverage expanded to genomic coordinates");
-
-        std::tie(flat_bp_coverage, bp_component_offsets) =
-            expandPosCovGlobal(
-                flat_idx_coverage,
-                data.layout.component_offsets,
-                data.idx2bp,
-                data.idx2bp_offsets
-            );
-    }
-
-    const std::filesystem::path output_directory(args.output_directory);
-
-    // ============================================================
-    // OPTIONAL OUTPUT: TSV
-    // ============================================================
-    if (args.generateTable()) {
-        std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Coverage Table Export\n";
+        // ============================================================
+        // STEP 1: CDX Loading
+        // ============================================================
+        std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] CDX Loading\n";
+        cdx::GlobalData data;
 
         {
-            const std::filesystem::path output_path = output_directory / cfg::NAME_TSV_FILE;
-            cfg::ScopedTimer timer("Coverage TSV table written");
-
-            output::writeCoverageTsvGlobal(
-                output_path,
-                flat_bp_coverage,
-                bp_component_offsets,
-                data.layout.component_names
-            );
-
-            timer.update_name("Coverage table saved (" + output_path.filename().string() + ')');
+            cfg::ScopedTimer timer("Global CDX data loaded");
+            data = cdx::loadGlobal(args.cdx_file);
+            timer.update_name("Whole pangenome loaded");
         }
-    }
 
-    // ============================================================
-    // OPTIONAL OUTPUT: Statistics
-    // ============================================================
-    if (args.generateStats()) {
-        std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Statistics Report\n";
+        // ============================================================
+        // STEP 2: GAM Processing
+        // ============================================================
+        std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] GAM Processing\n";
+        GamMappingStats mapping_stats;
 
         {
-            const std::filesystem::path output_path = output_directory / cfg::NAME_STATS_FILE;
-            cfg::ScopedTimer timer("Coverage statistics report written");
+            cfg::ScopedTimer timer("GAM alignments processed");
 
-            output::writeStatsReportGlobal(
-                output_path,
-                flat_bp_coverage,
-                bp_component_offsets,
-                data.layout.component_names,
-                mapping_stats,
+            mapping_stats = process_gam(
+                args.gam_file,
+                data.node_coverage,
+                data.layout.graph_nid_min,
+                GAM_BATCH_SIZE,
+                args.decompression_threads,
                 args.worker_threads
             );
 
-            timer.update_name("Statistics report saved (" + output_path.filename().string() +')');
+            timer.update_name("Processed " + cfg::formatInteger(mapping_stats.total) + " reads");
+        }
+
+        // ============================================================
+        // STEP 3: Coverage Projection
+        // ============================================================
+        std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Genomic Coordinate Projection\n";
+        std::vector<cdx::Coverage> flat_idx_coverage;
+
+        {
+            cfg::ScopedTimer timer("Node coverage projected to component index space");
+
+            flat_idx_coverage = projectCov2IdxGlobal(
+                data.node_coverage,
+                data.nid2flat_idx,
+                data.layout.component_offsets
+            );
+        }
+
+        std::vector<cdx::Coverage> flat_bp_coverage;
+        std::vector<cdx::PosBp> bp_component_offsets;
+
+        {
+            cfg::ScopedTimer timer("Index coverage expanded to genomic coordinates");
+
+            std::tie(flat_bp_coverage, bp_component_offsets) =
+                    expandPosCovGlobal(
+                        flat_idx_coverage,
+                        data.layout.component_offsets,
+                        data.idx2bp,
+                        data.idx2bp_offsets
+                    );
+        }
+
+        const std::filesystem::path output_directory(args.output_directory);
+
+        // ============================================================
+        // OPTIONAL OUTPUT: TSV
+        // ============================================================
+        if (args.generateTable()) {
+            std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Coverage Table Export\n";
+
+            {
+                const std::filesystem::path output_path = output_directory / cfg::NAME_TSV_FILE;
+                cfg::ScopedTimer timer("Coverage TSV table written");
+
+                output::writeCoverageTsvGlobal(
+                    output_path,
+                    flat_bp_coverage,
+                    bp_component_offsets,
+                    data.layout.component_names
+                );
+
+                timer.update_name("Coverage table saved (" + output_path.filename().string() + ')');
+            }
+        }
+
+        // ============================================================
+        // OPTIONAL OUTPUT: Statistics
+        // ============================================================
+        if (args.generateStats()) {
+            std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Statistics Report\n";
+
+            {
+                const std::filesystem::path output_path = output_directory / cfg::NAME_STATS_FILE;
+                cfg::ScopedTimer timer("Coverage statistics report written");
+
+                output::writeStatsReportGlobal(
+                    output_path,
+                    flat_bp_coverage,
+                    bp_component_offsets,
+                    data.layout.component_names,
+                    mapping_stats,
+                    args.worker_threads
+                );
+
+                timer.update_name("Statistics report saved (" + output_path.filename().string() + ')');
+            }
+        }
+
+        // ============================================================
+        // OPTIONAL OUTPUT: Graph
+        // ============================================================
+        if (args.generateGraph()) {
+            std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Coverage Graph Generation\n";
+
+            cfg::ScopedTimer timer("Coverage graph");
+
+            output::PlotConfig plot_config;
+
+            plot_config.smoothing = static_cast<double>(args.smoothing);
+            plot_config.max_plot_points = static_cast<std::size_t>(args.max_plot_points);
+            plot_config.dpi = args.dpi;
+            plot_config.figure_width = args.figure_width;
+            plot_config.figure_height = args.figure_height;
+            plot_config.line_color = args.line_color;
+            plot_config.fill_color = args.fill_color;
+            if (args.log_base.has_value()) {
+                plot_config.log_base = args.log_base.value();
+            }
+
+            if (args.component_type == ComponentType::Circular) {
+                output::writeCircularPlotGlobal(
+                    output_directory / cfg::NAME_GRAPH_FILE,
+                    flat_bp_coverage,
+                    bp_component_offsets,
+                    data.layout.component_names,
+                    plot_config
+                );
+            } else {
+                output::writeLinearPlotGlobal(
+                    output_directory / cfg::NAME_GRAPH_FILE,
+                    flat_bp_coverage,
+                    bp_component_offsets,
+                    data.layout.component_names,
+                    plot_config
+                );
+            }
+
+            timer.update_name("Coverage graph saved (" + std::string(cfg::NAME_GRAPH_FILE) + ')');
         }
     }
 
-    // ============================================================
-    // OPTIONAL OUTPUT: Graph
-    // ============================================================
-    if (args.generateGraph()) {
-        std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Coverage Graph Generation\n";
+    /**
+     * @brief Exécute le pipeline de couverture localisée.
+     */
+    void runQueryPipeline(
+        const CliArgs &args,
+        const std::size_t target_cid,
+        const std::string &target_name
+    ) {
+        const int output_steps =
+                static_cast<int>(args.generateTable()) +
+                static_cast<int>(args.generateStats()) +
+                static_cast<int>(args.generateGraph());
 
-        /*
-         * TODO: remplacer ce bloc par l'appel réel lorsque
-         * output_graph sera implémenté.
-         *
-         * Exemple futur :
-         *
-         * output::writeCoverageGraphGlobal(
-         *     output_directory / cfg::NAME_GRAPH_FILE,
-         *     flat_bp_coverage,
-         *     bp_component_offsets,
-         *     data.layout.component_names,
-         *     args
-         * );
-         */
+        const int total_steps = 3 + output_steps;
+        int current_step = 1;
 
-        {
-            cfg::ScopedTimer timer("Coverage graph skipped (module not implemented)");
+        std::optional<std::pair<std::int64_t, std::int64_t> > query_range = std::nullopt;
+
+        if (args.query && args.query->range) {
+            query_range = std::make_pair(args.query->range->start, args.query->range->end);
         }
-    }
-}
 
-/**
- * @brief Exécute le pipeline de couverture localisée.
- */
-void runQueryPipeline(
-    const CliArgs& args,
-    const std::size_t target_cid,
-    const std::string& target_name
-) {
-    const int output_steps =
-        static_cast<int>(args.generateTable()) +
-        static_cast<int>(args.generateStats()) +
-        static_cast<int>(args.generateGraph());
+        const bool is_circular = args.component_type == ComponentType::Circular;
 
-    const int total_steps = 3 + output_steps;
-    int current_step = 1;
-
-    std::optional<std::pair<std::int64_t, std::int64_t>> query_range = std::nullopt;
-
-    if (args.query && args.query->range) {
-        query_range = std::make_pair(args.query->range->start, args.query->range->end);
-    }
-
-    const bool is_circular = args.component_type == ComponentType::Circular;
-
-    // ============================================================
-    // STEP 1: Query CDX Loading
-    // ============================================================
-    std::cerr << "\n[STEP " << current_step++ << '/' << total_steps<< "] CDX Query Loading\n";
-    cdx::QueryData data;
-
-    {
-        cfg::ScopedTimer timer("Query component loaded");
-
-        data = cdx::loadQuery(
-            args.cdx_file,
-            static_cast<cdx::Cid>(target_cid),
-            query_range,
-            is_circular
-        );
-
-        timer.update_name("Pangenome component " + target_name + " loaded");
-    }
-
-    // ============================================================
-    // STEP 2: GAM Processing
-    // ============================================================
-    std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] GAM Processing\n";
-    GamMappingStats mapping_stats;
-
-    {
-        cfg::ScopedTimer timer("GAM alignments processed");
-
-        mapping_stats = process_gam(
-            args.gam_file,
-            data.node_coverage,
-            data.component.nid_min,
-            GAM_BATCH_SIZE,
-            args.decompression_threads,
-            args.worker_threads
-        );
-
-        timer.update_name("Processed " + std::to_string(mapping_stats.total) + " GAM reads");
-    }
-
-    // ============================================================
-    // STEP 3: Coverage Projection
-    // ============================================================
-    std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Genomic Coordinate Projection\n";
-    std::vector<cdx::Coverage> idx_coverage;
-
-    {
-        cfg::ScopedTimer timer("Node coverage projected to component index space");
-
-        idx_coverage = projectCov2IdxQuery(
-            data.node_coverage,
-            data.nid2idx,
-            data.idx2bp.size() - 1
-        );
-    }
-
-    std::vector<cdx::Coverage> bp_coverage;
-
-    {
-        cfg::ScopedTimer timer("Index coverage expanded to genomic coordinates");
-        bp_coverage = expandPosCovQuery(idx_coverage,data.idx2bp);
-    }
-
-    {
-        cfg::ScopedTimer timer("Coverage trimmed to requested query interval");
-        bp_coverage = trimCoverageToQuery(bp_coverage,data.query_range_bp);
-    }
-
-    const std::filesystem::path output_directory(args.output_directory);
-
-    // ============================================================
-    // OPTIONAL OUTPUT: TSV
-    // ============================================================
-    if (args.generateTable()) {
-        std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Coverage Table Export\n";
+        // ============================================================
+        // STEP 1: Query CDX Loading
+        // ============================================================
+        std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] CDX Query Loading\n";
+        cdx::QueryData data;
 
         {
-            const std::filesystem::path output_path = output_directory / cfg::NAME_TSV_FILE;
-            cfg::ScopedTimer timer("Coverage TSV table written");
+            cfg::ScopedTimer timer("Query component loaded");
 
-            output::writeCoverageTsvQuery(
-                output_path,
-                bp_coverage,
-                data.component.compo_name
+            data = cdx::loadQuery(
+                args.cdx_file,
+                static_cast<cdx::Cid>(target_cid),
+                query_range,
+                is_circular
             );
 
-            timer.update_name("Coverage table saved (" + output_path.filename().string() +')');
+            timer.update_name("Pangenome component " + target_name + " loaded");
         }
-    }
 
-    // ============================================================
-    // OPTIONAL OUTPUT: Statistics
-    // ============================================================
-    if (args.generateStats()) {
-        std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Statistics Report\n";
+        // ============================================================
+        // STEP 2: GAM Processing
+        // ============================================================
+        std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] GAM Processing\n";
+        GamMappingStats mapping_stats;
 
         {
-            const std::filesystem::path output_path = output_directory / cfg::NAME_STATS_FILE;
-            cfg::ScopedTimer timer("Coverage statistics report written");
+            cfg::ScopedTimer timer("GAM alignments processed");
 
-            output::writeStatsReportQuery(
-                output_path,
-                mapping_stats,
-                bp_coverage,
-                data.component.compo_name
+            mapping_stats = process_gam(
+                args.gam_file,
+                data.node_coverage,
+                data.component.nid_min,
+                GAM_BATCH_SIZE,
+                args.decompression_threads,
+                args.worker_threads
             );
 
-            timer.update_name("Statistics report saved (" + output_path.filename().string() +')');
+            timer.update_name("Processed " + std::to_string(mapping_stats.total) + " GAM reads");
         }
-    }
 
-    // ============================================================
-    // OPTIONAL OUTPUT: Graph
-    // ============================================================
-    if (args.generateGraph()) {
-        std::cerr << "\n[STEP "<< current_step++ << '/' << total_steps << "] Coverage Graph Generation\n";
-
-        /*
-         * TODO: remplacer ce bloc lorsque output_graph sera
-         * disponible.
-         *
-         * Exemple futur :
-         *
-         * output::writeCoverageGraphQuery(
-         *     output_directory / cfg::NAME_GRAPH_FILE,
-         *     bp_coverage,
-         *     data.component.compo_name,
-         *     data.query_range_bp,
-         *     args
-         * );
-         */
+        // ============================================================
+        // STEP 3: Coverage Projection
+        // ============================================================
+        std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Genomic Coordinate Projection\n";
+        std::vector<cdx::Coverage> idx_coverage;
 
         {
-            cfg::ScopedTimer timer("Coverage graph skipped (module not implemented)");
+            cfg::ScopedTimer timer("Node coverage projected to component index space");
+
+            idx_coverage = projectCov2IdxQuery(
+                data.node_coverage,
+                data.nid2idx,
+                data.idx2bp.size() - 1
+            );
+        }
+
+        std::vector<cdx::Coverage> bp_coverage;
+
+        {
+            cfg::ScopedTimer timer("Index coverage expanded to genomic coordinates");
+            bp_coverage = expandPosCovQuery(idx_coverage, data.idx2bp);
+        }
+
+        {
+            cfg::ScopedTimer timer("Coverage trimmed to requested query interval");
+            bp_coverage = trimCoverageToQuery(bp_coverage, data.query_range_bp);
+        }
+
+        const std::filesystem::path output_directory(args.output_directory);
+
+        // ============================================================
+        // OPTIONAL OUTPUT: TSV
+        // ============================================================
+        if (args.generateTable()) {
+            std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Coverage Table Export\n";
+
+            {
+                const std::filesystem::path output_path = output_directory / cfg::NAME_TSV_FILE;
+                cfg::ScopedTimer timer("Coverage TSV table written");
+
+                output::writeCoverageTsvQuery(
+                    output_path,
+                    bp_coverage,
+                    data.component.compo_name
+                );
+
+                timer.update_name("Coverage table saved (" + output_path.filename().string() + ')');
+            }
+        }
+
+        // ============================================================
+        // OPTIONAL OUTPUT: Statistics
+        // ============================================================
+        if (args.generateStats()) {
+            std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Statistics Report\n";
+
+            {
+                const std::filesystem::path output_path = output_directory / cfg::NAME_STATS_FILE;
+                cfg::ScopedTimer timer("Coverage statistics report written");
+
+                output::writeStatsReportQuery(
+                    output_path,
+                    mapping_stats,
+                    bp_coverage,
+                    data.component.compo_name
+                );
+
+                timer.update_name("Statistics report saved (" + output_path.filename().string() + ')');
+            }
+        }
+
+        // ============================================================
+        // OPTIONAL OUTPUT: Graph
+        // ============================================================
+        if (args.generateGraph()) {
+            std::cerr << "\n[STEP " << current_step++ << '/' << total_steps << "] Coverage Graph Generation\n";
+
+            cfg::ScopedTimer timer("Coverage graph");
+
+            output::PlotConfig plot_config;
+
+            plot_config.smoothing = static_cast<double>(args.smoothing);
+            plot_config.max_plot_points = static_cast<std::size_t>(args.max_plot_points);
+            plot_config.dpi = args.dpi;
+            plot_config.figure_width = args.figure_width;
+            plot_config.figure_height = args.figure_height;
+            plot_config.line_color = args.line_color;
+            plot_config.fill_color = args.fill_color;
+            if (args.log_base.has_value()) {
+                plot_config.log_base = args.log_base.value();
+            }
+
+            if (is_circular) {
+                /*
+                 * Contrairement au backend linéaire, on NE découpe PAS bp_coverage :
+                 * le lissage circulaire (frontière position 0 / position compo_end
+                 * voisines sur la molécule) et les requêtes traversant l'origine ont
+                 * besoin du tableau complet de la composante. writeCircularPlotQuery
+                 * gère lui-même l'extraction du parcours à partir de query_range_bp.
+                 */
+                output::writeCircularPlotQuery(
+                    output_directory / cfg::NAME_GRAPH_FILE,
+                    bp_coverage,
+                    data.component.compo_name,
+                    data.getComponentLength(),
+                    data.query_range_bp,
+                    plot_config
+                );
+            } else {
+                /*
+                 * bp_coverage couvre toute la composante (trimCoverageToQuery ne
+                 * fait que masquer les positions hors requête, il ne redimensionne
+                 * pas le vecteur). Pour que l'axe X du graphe corresponde
+                 * exactement à la plage demandée (ex. -q "chr1 0:100" -> axe 0-100
+                 * et non compo_start-compo_end), on découpe ici un sous-vecteur
+                 * borné à [query_start, query_end].
+                 */
+                const auto [query_start_bp, query_end_bp] = data.query_range_bp;
+
+                if (query_start_bp > query_end_bp) {
+                    throw std::invalid_argument(
+                        "A linear graph cannot represent an origin-crossing query."
+                    );
+                }
+                if (query_end_bp >= bp_coverage.size()) {
+                    throw std::out_of_range("Query range exceeds component coverage bounds.");
+                }
+
+                const std::vector<cdx::Coverage> plot_coverage(
+                    bp_coverage.begin() + static_cast<std::ptrdiff_t>(query_start_bp),
+                    bp_coverage.begin() + static_cast<std::ptrdiff_t>(query_end_bp) + 1
+                );
+
+                output::writeLinearPlotQuery(
+                    output_directory /cfg::NAME_GRAPH_FILE,
+                    plot_coverage,
+                    data.component.compo_name,
+                    query_start_bp,
+                    plot_config
+                );
+            }
         }
     }
-}
-
 } // namespace
 
-int main(int argc, char** argv) {
+int main(int argc, char **argv) {
     using Clock = std::chrono::steady_clock;
     const auto total_start = Clock::now();
 
@@ -364,9 +423,9 @@ int main(int argc, char** argv) {
          * composantes à leurs CID.
          */
         {
-            const cdx::GlobalData metadata =cdx::loadGlobal(args.cdx_file);
+            const cdx::GlobalData metadata = cdx::loadGlobal(args.cdx_file);
 
-            for (std::size_t cid = 0; cid < metadata.layout.component_names.size();++cid) {
+            for (std::size_t cid = 0; cid < metadata.layout.component_names.size(); ++cid) {
                 resolver.register_component(cid, metadata.layout.component_names[cid]);
             }
         }
@@ -397,9 +456,9 @@ int main(int argc, char** argv) {
 
         // PROGRAM HEADER
         std::cerr
-            << std::string(TERMINAL_WIDTH, '=') << '\n'
-            << std::setw(46) << "CDX COVERAGE"  << '\n'
-            << std::string(TERMINAL_WIDTH, '=') << '\n';
+                << std::string(TERMINAL_WIDTH, '=') << '\n'
+                << std::setw(46) << "CDX COVERAGE" << '\n'
+                << std::string(TERMINAL_WIDTH, '=') << '\n';
 
 
         if (args.query) {
@@ -407,38 +466,33 @@ int main(int argc, char** argv) {
 
 
             runQueryPipeline(args, resolved.cid, std::string(resolved.name));
-
         } else {
-
             runGlobalPipeline(args);
         }
 
         const double total_seconds = std::chrono::duration<double>(Clock::now() - total_start).count();
         std::cerr
-            << '\n' << std::string(TERMINAL_WIDTH, '=') << '\n'
-            << " [SUCCESS] Execution finished in " << std::fixed << std::setprecision(3) << total_seconds << " s\n"
-            << std::string(TERMINAL_WIDTH, '=') << '\n';
+                << '\n' << std::string(TERMINAL_WIDTH, '=') << '\n'
+                << " [SUCCESS] Execution finished in " << std::fixed << std::setprecision(3) << total_seconds << " s\n"
+                << std::string(TERMINAL_WIDTH, '=') << '\n';
 
         return EXIT_SUCCESS;
-
-    } catch (const std::exception& error) {
-
+    } catch (const std::exception &error) {
         const double total_seconds = std::chrono::duration<double>(Clock::now() - total_start).count();
         std::cerr
-            << '\n' << std::string(TERMINAL_WIDTH, '=') << '\n'
-            << " [FATAL ERROR] " << error.what() << '\n'
-            << " Execution failed after " << std::fixed << std::setprecision(3) << total_seconds << " s\n"
-            << std::string(TERMINAL_WIDTH, '=') << '\n';
+                << '\n' << std::string(TERMINAL_WIDTH, '=') << '\n'
+                << " [FATAL ERROR] " << error.what() << '\n'
+                << " Execution failed after " << std::fixed << std::setprecision(3) << total_seconds << " s\n"
+                << std::string(TERMINAL_WIDTH, '=') << '\n';
 
         return EXIT_FAILURE;
-
     } catch (...) {
         const double total_seconds = std::chrono::duration<double>(Clock::now() - total_start).count();
         std::cerr
-            << '\n' << std::string(TERMINAL_WIDTH, '=') << '\n'
-            << " [FATAL ERROR] Unknown non-standard error occurred.\n"
-            << " Execution failed after " << std::fixed << std::setprecision(3) << total_seconds << " s\n"
-            << std::string(TERMINAL_WIDTH, '=') << '\n';
+                << '\n' << std::string(TERMINAL_WIDTH, '=') << '\n'
+                << " [FATAL ERROR] Unknown non-standard error occurred.\n"
+                << " Execution failed after " << std::fixed << std::setprecision(3) << total_seconds << " s\n"
+                << std::string(TERMINAL_WIDTH, '=') << '\n';
         return EXIT_FAILURE;
     }
 }

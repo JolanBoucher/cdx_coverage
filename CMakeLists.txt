@@ -56,6 +56,33 @@ pkg_check_modules(
         htslib>=1.10
 )
 
+# Cairo is used for in-process linear coverage plot rendering (no subprocess).
+pkg_check_modules(
+        CAIRO
+        REQUIRED
+        IMPORTED_TARGET
+        cairo
+)
+
+# Circular coverage plots are rendered by a Python (pycirclize) subprocess
+# (src/python_circular_plot.cpp + python_script/circular_plot.py) - see
+# CIRCULAR_PLOT_SETUP.md. Python is only needed at RUNTIME for that one
+# feature (--component-type circular); this project must still compile with
+# no Python present. This lookup is purely informational (a configure-time
+# warning), never REQUIRED. If found, a POST_BUILD step further below
+# auto-provisions a private venv with numpy/matplotlib/pycirclize next to
+# the built executable, so end users don't have to set one up by hand.
+find_package(Python3 COMPONENTS Interpreter)
+if(NOT Python3_FOUND)
+    message(STATUS
+            "Python 3 interpreter not found at configure time. This is fine: "
+            "cdx_coverage compiles without it. It is only needed at RUNTIME to "
+            "render circular graphs (--component-type circular). A Python 3 "
+            "install would also let this build auto-provision numpy/matplotlib/"
+            "pycirclize for you - see CIRCULAR_PLOT_SETUP.md."
+    )
+endif()
+
 # ---------------------------------------------------------------------------
 # Build libvgio as part of this project
 # ---------------------------------------------------------------------------
@@ -130,6 +157,10 @@ add_executable(cdx_coverage
         src/cli.hpp
         src/query_resolver.cpp
         src/query_resolver.h
+        src/linear_plot.cpp
+        src/output_plot.h
+        src/python_circular_plot.cpp
+        src/cairo_plot.cpp
 )
 
 target_compile_features(cdx_coverage PRIVATE cxx_std_17)
@@ -138,18 +169,22 @@ target_include_directories(cdx_coverage PRIVATE
         "${CMAKE_CURRENT_SOURCE_DIR}/include"
 )
 
+# Dev-time fallback so python_circular_plot.cpp can find circular_plot.py
+# straight from the source tree when running the binary directly out of a
+# build directory (before any install step ran). At runtime, the script is
+# looked up next to the executable first (see the copy/install rules below);
+# this compile definition is only consulted if that lookup fails.
+target_compile_definitions(cdx_coverage PRIVATE
+        CDX_CIRCULAR_PLOT_SCRIPT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/python_script"
+)
+
 add_subdirectory(
         ../cdx_lib
         cdx_lib_build
 )
 
-target_link_libraries(
-        cdx_coverage
-        PRIVATE
-        cdx_lib
-)
-
 target_link_libraries(cdx_coverage PRIVATE
+        cdx_lib
         ${CDX_VGIO_TARGET}
         protobuf::libprotobuf
         absl::log_internal_message
@@ -157,6 +192,7 @@ target_link_libraries(cdx_coverage PRIVATE
         absl::hash
         absl::status
         absl::raw_logging_internal
+        PkgConfig::CAIRO
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
@@ -166,3 +202,62 @@ if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")
             -Wpedantic
     )
 endif()
+
+# Copy circular_plot.py next to the built executable so it is found there at
+# runtime (see resolveCircularPlotScript in src/python_circular_plot.cpp)
+# without requiring an install step during development.
+#
+# NOT a `TARGET cdx_coverage POST_BUILD` command: those only fire when the
+# cdx_coverage TARGET itself gets rebuilt/relinked. Editing only
+# circular_plot.py (no C++ change) would then leave a stale copy next to the
+# executable - `cmake --build` sees cdx_coverage is already up to date and
+# skips it entirely, silently running old Python logic. Tying this to its
+# own OUTPUT/DEPENDS instead makes `cmake --build` re-copy it on its own
+# whenever the source .py file's content changes, independent of the C++
+# target's build state.
+set(CDX_CIRCULAR_PLOT_SCRIPT_SRC "${CMAKE_CURRENT_SOURCE_DIR}/python_script/circular_plot.py")
+set(CDX_CIRCULAR_PLOT_SCRIPT_DEST "${CMAKE_CURRENT_BINARY_DIR}/circular_plot.py")
+
+add_custom_command(
+        OUTPUT "${CDX_CIRCULAR_PLOT_SCRIPT_DEST}"
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${CDX_CIRCULAR_PLOT_SCRIPT_SRC}"
+        "${CDX_CIRCULAR_PLOT_SCRIPT_DEST}"
+        DEPENDS "${CDX_CIRCULAR_PLOT_SCRIPT_SRC}"
+        COMMENT "Copying circular_plot.py next to cdx_coverage"
+)
+add_custom_target(cdx_coverage_circular_plot_script ALL
+        DEPENDS "${CDX_CIRCULAR_PLOT_SCRIPT_DEST}"
+)
+add_dependencies(cdx_coverage cdx_coverage_circular_plot_script)
+
+# Auto-provision a private venv (numpy/matplotlib/pycirclize) next to the
+# built executable, so building cdx_coverage on a fresh machine is enough to
+# get working circular graphs too - no one has to create/activate a venv by
+# hand. Only attempted if a Python 3 interpreter was found at configure time.
+# NEVER fails the build (see cmake/setup_circular_env.sh: any problem, e.g.
+# no network access, is a warning, not a build error). At runtime,
+# resolvePythonExecutable() (src/python_circular_plot.cpp) prefers this
+# bundled venv over the system "python3" when present, and
+# CDX_PYTHON_EXECUTABLE always overrides both.
+if(Python3_FOUND)
+    add_custom_command(TARGET cdx_coverage POST_BUILD
+            COMMAND bash
+            "${CMAKE_CURRENT_SOURCE_DIR}/cmake/setup_circular_env.sh"
+            "$<TARGET_FILE_DIR:cdx_coverage>/pyenv"
+            "${CMAKE_CURRENT_SOURCE_DIR}/python_script/requirements.txt"
+            "${Python3_EXECUTABLE}"
+            COMMENT "Provisioning bundled Python environment for circular graphs (best-effort)"
+    )
+endif()
+
+# ---------------------------------------------------------------------------
+# Installation
+# ---------------------------------------------------------------------------
+install(TARGETS cdx_coverage DESTINATION bin)
+install(FILES python_script/circular_plot.py DESTINATION bin)
+
+# Bundle the provisioned venv with `make install` too, if it was built
+# successfully (OPTIONAL: silently skipped if provisioning failed/was
+# skipped, e.g. no network access during the build).
+install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/pyenv" DESTINATION bin OPTIONAL)

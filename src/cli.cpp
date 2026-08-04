@@ -221,7 +221,8 @@ CliArgs parse_args(const int argc, char **argv) {
             ->check(CLI::Range(0.0, 1.0));
 
     group_graph->add_option("--max-point,--max-points", args.max_plot_points,
-                            "Maximum points passed to plotting backend (0 to disable). Default: 10000.");
+                            "Maximum points passed to plotting backend. Use 0 to disable downsampling "
+                            "and plot at full resolution. Default: 10000.");
     group_graph->add_option("--dpi", args.dpi, "Output graph resolution in DPI. Default: 300.")
             ->check(CLI::PositiveNumber);
 

@@ -12,6 +12,10 @@ the GAM alignments must match the node identifiers stored in the CDX index.
 
 ## Requirements
 #### Primary dependency
+Requirements:
+- Python >= 3.10
+- numpy
+- matplotlib
 
 - [libvgio](https://github.com/vgteam/libvgio)
 
