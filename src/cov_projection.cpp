@@ -16,12 +16,7 @@
 #include <utility>
 #include <vector>
 
-/**
- * @brief Maps relative node coverage values into a component's local topological index space.
- *
- * Takes node-level coverage indexed by relative offset and redistributes values into a local
- * array ordered by component rank (`local_idx`). Unmapped nodes or nodes matching sentinels are skipped.
- */
+// Projects query coverage from nid-space into local idx-space.
 [[nodiscard]]
 std::vector<cdx::Coverage> projectCov2IdxQuery(
     const std::vector<cdx::Coverage>& cov_table,
@@ -66,12 +61,7 @@ std::vector<cdx::Coverage> projectCov2IdxQuery(
     return idx_cov_table;
 }
 
-/**
- * @brief Expands node-level coverage into per-base-pair depth across a single component.
- *
- * Uses cumulative prefix-sum array `idx2bp` to calculate each node's [start, end) base-pair interval,
- * filling those intervals with the node's assigned depth.
- */
+// Expands node-level query coverage into bp-space.
 [[nodiscard]]
 std::vector<cdx::Coverage> expandPosCovQuery(
     const std::vector<cdx::Coverage>& idx_cov_table,
@@ -123,12 +113,7 @@ std::vector<cdx::Coverage> expandPosCovQuery(
     return bp_cov_table;
 }
 
-/**
- * @brief Projects node coverage across the whole graph into a single flattened index array.
- *
- * Maps relative node offsets to global flat indices (`nid2flat_idx`). Nodes unmapped in the graph
- * or assigned `cfg::INVALID_FLAT_IDX` are skipped.
- */
+// Projects global coverage from nid-space into flat idx-space.
 [[nodiscard]]
 std::vector<cdx::Coverage> projectCov2IdxGlobal(
     const std::vector<cdx::Coverage>& cov_table,
@@ -173,16 +158,7 @@ std::vector<cdx::Coverage> projectCov2IdxGlobal(
     return flat_idx_cov_table;
 }
 
-/**
- * @brief Concatenates per-component base-pair coverages into a single graph-wide buffer.
- *
- * Sequentially expands node coverage entries across all components, keeping track of global base-pair
- * boundary offsets.
- *
- * @return std::pair containing:
- *         - first:  Flattened base-pair coverage array for the whole graph.
- *         - second: Cumulative base-pair offset boundaries per component (size = num_components + 1).
- */
+// Expands flattened global node coverage into flattened bp-space.
 [[nodiscard]]
 std::pair<std::vector<cdx::Coverage>, std::vector<cdx::PosBp>> expandPosCovGlobal(
     const std::vector<cdx::Coverage>& flat_idx_cov_table,
@@ -193,26 +169,20 @@ std::pair<std::vector<cdx::Coverage>, std::vector<cdx::PosBp>> expandPosCovGloba
     // 1. Boundary array validation
     if (component_offsets.size() < 2 || idx2bp_offsets.size() != component_offsets.size()) {
         throw std::invalid_argument(
-            "Component boundary offset tables must contain identical sizes of at least 2 entries."
-        );
+            "Component boundary offset tables must contain identical sizes of at least 2 entries.");
     }
-
     if (component_offsets.front() != 0 || idx2bp_offsets.front() != 0) {
         throw std::invalid_argument("The first component and idx2bp offsets must be zero.");
     }
-
     if (component_offsets.back() != flat_idx_cov_table.size()) {
         throw std::invalid_argument(
-            "Final component offset (" + std::to_string(component_offsets.back()) +
-            ") must match flat_idx_cov_table length (" + std::to_string(flat_idx_cov_table.size()) + ")."
-        );
+            "Final component offset (" + std::to_string(component_offsets.back()) +") "
+            "must match flat_idx_cov_table length (" + std::to_string(flat_idx_cov_table.size()) + ").");
     }
-
     if (idx2bp_offsets.back() != idx2bp.size()) {
         throw std::invalid_argument(
             "Final idx2bp offset (" + std::to_string(idx2bp_offsets.back()) +
-            ") must match total idx2bp array size (" + std::to_string(idx2bp.size()) + ")."
-        );
+            ") must match total idx2bp array size (" + std::to_string(idx2bp.size()) + ").");
     }
 
     const std::size_t component_count = component_offsets.size() - 1;
@@ -220,7 +190,9 @@ std::pair<std::vector<cdx::Coverage>, std::vector<cdx::PosBp>> expandPosCovGloba
     // 2. Pre-pass: Compute total graph base-pair length across all components
     cdx::PosBp running_bp = 0;
     for (std::size_t comp_id = 0; comp_id < component_count; ++comp_id) {
+
         const std::size_t pos_end = idx2bp_offsets[comp_id + 1];
+
         if (pos_end > 0 && pos_end <= idx2bp.size()) {
             running_bp += idx2bp[pos_end - 1];
         }
@@ -234,6 +206,7 @@ std::pair<std::vector<cdx::Coverage>, std::vector<cdx::PosBp>> expandPosCovGloba
     // 3. Allocate combined global base-pair coverage table
     std::vector flat_bp_cov_table(running_bp, cfg::INVALID_NODE);
     std::vector<cdx::PosBp> component_bp_offsets;
+
     component_bp_offsets.reserve(component_count + 1);
     component_bp_offsets.push_back(0);
 
@@ -241,10 +214,10 @@ std::pair<std::vector<cdx::Coverage>, std::vector<cdx::PosBp>> expandPosCovGloba
 
     // 4. Expand nodes component by component into contiguous base-pair output
     for (std::size_t comp_id = 0; comp_id < component_count; ++comp_id) {
+
         const cdx::RecordCount node_start = component_offsets[comp_id];
         const cdx::RecordCount node_end = component_offsets[comp_id + 1];
         const std::size_t node_count = node_end - node_start;
-
         const std::size_t pos_offset = idx2bp_offsets[comp_id];
 
         for (std::size_t local_idx = 0; local_idx < node_count; ++local_idx) {
@@ -284,13 +257,7 @@ std::pair<std::vector<cdx::Coverage>, std::vector<cdx::PosBp>> expandPosCovGloba
     return {std::move(flat_bp_cov_table), std::move(component_bp_offsets)};
 }
 
-/**
- * @brief Masks out-of-query regions of a base-pair coverage array using sentinel values.
- *
- * Preserves total vector dimensions while setting positions outside the requested query
- * interval to `cfg::NOT_IN_QUERY` (if currently less than the sentinel value). Supports both standard
- * [start, end] and inverted range conditions.
- */
+// Masks positions outside a query interval.
 [[nodiscard]]
 std::vector<cdx::Coverage> trimCoverageToQuery(
     const std::vector<cdx::Coverage>& bp_cov_table,

@@ -83,7 +83,15 @@ struct CliArgs {
 };
 
 /**
- * @brief Parses command-line options and validates inputs using CLI11.
+ * @brief Parses and validates command-line arguments for the coverage tool.
+ *
+ * Configures CLI11 options, positional arguments, option groups, and validation
+ * rules for calculating GAM coverage using a CDX index. Handles thread auto-scaling,
+ * component query parsing, logging parameters, and dynamic figure dimensions.
+ *
+ * @param argc Count of command-line arguments.
+ * @param argv Array of command-line argument strings.
+ * @return CliArgs Populated and validated argument structure ready for program execution.
  */
 CliArgs parse_args(int argc, char** argv);
 

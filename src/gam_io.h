@@ -1,3 +1,12 @@
+/**
+ * @file gam_io.h
+ * @brief Header file defining structures and functions for processing GAM alignment files[cite: 1].
+ *
+ * This module provides the core parallel engine (`process_gam`) for streaming and analyzing
+ * GAM alignments against a CDX graph index, alongside tracking structures (`GamMappingStats`)[cite: 1]
+ * for performance metrics and mapping statistics.
+ */
+
 #ifndef GAM_IO_H
 #define GAM_IO_H
 
@@ -9,17 +18,23 @@
 #include <vector>
 
 /**
- * @brief Statistiques produites pendant la lecture d'un fichier GAM.
+ * @brief Statistics collected during GAM file parsing and alignment processing.
  *
- * Les quatre premiers compteurs sont calculés par alignment/read.
- * Les deux derniers sont des compteurs diagnostiques calculés par mapping.
+ * The primary counters track alignment-level mapping metrics, while the compound
+ * assignment operator allows safe accumulation of metrics across multithreaded workers.
  */
 struct GamMappingStats {
-    std::uint64_t total = 0;                       // Nombre total d'alignements correctement désérialisés.
-    std::uint64_t mapped = 0;                      // Nombre d'alignements contenant au moins un node ID valide.
-    std::uint64_t mapped_to_query = 0;             // Nombre d'alignements touchant au moins un nœud de la query active.
-    std::uint64_t unmapped = 0;                    // Nombre d'alignements ne contenant aucun node ID valide.
+    std::uint64_t total = 0;            // Total number of successfully deserialized alignments.
+    std::uint64_t mapped = 0;           // Number of alignments containing at least one valid node ID.
+    std::uint64_t mapped_to_query = 0;  // Number of alignments overlapping at least one node in the active query.
+    std::uint64_t unmapped = 0;         // Number of alignments containing no valid node IDs.
 
+    /**
+     * @brief Accumulates statistics from another instance in-place.
+     *
+     * @param other The GamMappingStats instance to add.
+     * @return Reference to this updated GamMappingStats object.
+     */
     GamMappingStats& operator+=(const GamMappingStats& other) noexcept {
         total += other.total;
         mapped += other.mapped;
@@ -30,15 +45,25 @@ struct GamMappingStats {
 };
 
 /**
- * @brief Calcule la couverture locale et les statistiques d'un fichier GAM.
+ * @brief Main parallel coverage engine for processing and analyzing GAM alignments.
  *
- * @param gam_file Chemin vers le fichier GAM.
- * @param target Vecteur de couverture dans l'espace local CDX.
- * @param nid_min Premier node ID global représenté par target.
- * @param batch_size Nombre maximal d'alignements par tâche OpenMP.
- * @param decompression_threads Nombre de threads de décompression BGZF.
+ * This function reads and parses a GAM alignment file in parallel using OpenMP tasks and
+ * `vg::io::MessageIterator`. It streams alignments in batches, using Protocol Buffers
+ * memory arenas for efficient bump allocation. It tracks coverage per node relative to
+ * a CDX graph index, restricts calculations to valid query bounds, handles thread-local
+ * aggregations, and safely reduces final node coverages while preventing integer overflows.
  *
- * @return Statistiques calculées pendant le traitement du GAM.
+ * @param gam_file Path to the input GAM alignment file.
+ * @param target Reference to the output coverage vector where calculated per-node values are stored.
+ * @param nid_min Minimum node ID offset defining the start of the local coordinate range.
+ * @param batch_size Number of alignments grouped into a single processing task batch.
+ * @param decompression_threads Number of dedicated threads used for parallel GAM stream decompression.
+ * @param worker_threads Number of active worker threads allocated for parallel alignment parsing and counting.
+ * @return GamMappingStats Aggregated mapping statistics (total, mapped, unmapped, and query-mapped counts).
+ *
+ * @throws std::invalid_argument If @p batch_size is zero, @p decompression_threads is non-positive, or @p target is empty.
+ * @throws std::runtime_error If the GAM file fails to open or encounters stream reading/parsing errors.
+ * @throws std::logic_error If internal statistical invariants are violated.
  */
 [[nodiscard]]
 GamMappingStats process_gam(

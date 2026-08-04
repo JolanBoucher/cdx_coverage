@@ -1,3 +1,12 @@
+/**
+ * @file cli.cpp
+ * @brief Command-line interface parser and validation implementation for cdx_coverage.
+ *
+ * Provides argument parsing via CLI11 for input files (CDX index, GAM alignments),
+ * execution modes (inspect vs. coverage calculation), thread dispatching configuration,
+ * target region/component query parsing, and custom plot styling options.
+ */
+
 #include "cli.hpp"
 #include <CLI/CLI.hpp>
 
@@ -41,14 +50,28 @@ namespace {
 #endif
     }
 
-    // Custom parser pour --query (nom de composante ou ID + plage optionnelle)
+    /**
+     * @brief Custom parser for the `--query` command-line argument.
+     *
+     * Extracts a component identifier (component name or numerical component ID)
+     * and an optional 0-based index range [start, end] from a string.
+     *
+     * @param text The raw input string supplied by the user (e.g., "chr1", "0", "chrM 1000:5000").
+     * @return QuerySelection A populated struct containing the component target and optional range.
+     * @throws std::invalid_argument If the input text does not match any valid query format.
+     */
     QuerySelection parse_query(const std::string &text) {
+        // Regex matching either:
+        // Group 1: Component identifier (name or ID)
+        // Group 2 & 3 (Optional): Range start and end coordinates separated by ':'
         static const std::regex query_regex(
             R"(^\s*([^\s]+)(?:\s+(-?\d+):(-?\d+))?\s*$)",
             std::regex::ECMAScript
         );
 
         std::smatch match;
+
+        // Validate the input string against expected formats
         if (!std::regex_match(text, match, query_regex)) {
             throw std::invalid_argument(
                 "Invalid query format: '" + text + "'.\n"
@@ -61,10 +84,13 @@ namespace {
         }
 
         QuerySelection sel;
+        // Capture mandatory component name or ID (Group 1)
         sel.component = match[1].str();
 
+        // Check if an optional range was captured (Groups 2 and 3)
         if (match[2].matched && match[3].matched) {
             QueryRange r;
+            // Parse string coordinates to 64-bit signed integers
             r.start = std::stoll(match[2].str());
             r.end = std::stoll(match[3].str());
             sel.range = r;
@@ -73,33 +99,63 @@ namespace {
         return sel;
     }
 
+
+    /**
+ * @brief Parses and normalizes the graph component type from a string.
+ *
+ * Trims input whitespace, converts characters to lower case, and maps
+ * recognized flags to the corresponding `ComponentType` enum value.
+ *
+ * @param value Raw string input representing component type (e.g., "linear", "l", "CIRCULAR", "c").
+ * @return ComponentType Enum value indicating `ComponentType::Linear` or `ComponentType::Circular`.
+ * @throws std::invalid_argument If the normalized string is not a valid component type alias.
+ */
     ComponentType parse_component_type(std::string value) {
-        value = trim(value);
+        value = trim(value); // Strip leading/trailing whitespace
 
+        // Convert string to lower case for case-insensitive matching
         std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
-                           return static_cast<char>(std::tolower(c));
-                       }
-        );
+            return static_cast<char>(std::tolower(c));
+        });
 
+        // Map recognized aliases to enum values
         if (value == "l" || value == "linear") return ComponentType::Linear;
         if (value == "c" || value == "circular") return ComponentType::Circular;
+
         throw std::invalid_argument("Component type must be 'linear'/'l' or 'circular'/'c'.");
     }
 
+
+    /**
+     * @brief Parses plot figure dimensions from a string formatted as WIDTHxHEIGHT.
+     *
+     * Supports standard 'x' or 'X' separators as well as the UTF-8 multiplication symbol ('×').
+     *
+     * @param value String containing figure dimensions (e.g., "7x4.5", "10X8").
+     * @return std::pair<double, double> A pair containing {width, height} in inches.
+     * @throws std::invalid_argument If the string format is invalid or dimensions are <= 0.
+     */
     std::pair<double, double> parse_fig_size(const std::string &value) {
+        // Regex matching:
+        // Group 1: Width (positive integer or floating-point)
+        // Separator: 'x', 'X', or UTF-8 '×' (\xC3\x97)
+        // Group 2: Height (positive integer or floating-point)
         static const std::regex size_regex(
             R"(\s*(\d+(?:\.\d+)?)\s*[xX\xC3\x97]\s*(\d+(?:\.\d+)?)\s*)",
             std::regex::ECMAScript
         );
 
         std::smatch match;
+        // Validate string layout against the regex pattern
         if (!std::regex_match(value, match, size_regex)) {
             throw std::invalid_argument("Figure size must use WIDTHxHEIGHT format, e.g., '7x4.5'.");
         }
 
+        // Convert matched numerical string components to double values
         const double w = std::stod(match[1].str());
         const double h = std::stod(match[2].str());
 
+        // Ensure figure dimensions are strictly positive
         if (w <= 0.0 || h <= 0.0) {
             throw std::invalid_argument("Figure width and height must be strictly positive.");
         }
@@ -107,8 +163,25 @@ namespace {
         return {w, h};
     }
 
+    /**
+ * @brief Parses and validates a hexadecimal color code string.
+ *
+ * Trims leading/trailing whitespace, checks against standard hex color formats
+ * (including short-hand, RGB, RGBA, and ARGB variants), and normalizes the
+ * output string to uppercase.
+ *
+ * @param value Raw color string provided by the user (e.g., "#1e3a8a", "#fff", "#1E3A8AFF").
+ * @return std::string Standardized, uppercase hexadecimal color string (e.g., "#1E3A8A").
+ * @throws std::invalid_argument If the string does not match valid hexadecimal color patterns.
+ */
     std::string parse_hex_color(std::string value) {
-        value = trim(value);
+        value = trim(value); // Strip leading and trailing whitespace
+
+
+        // Regex matching valid hex color formats starting with '#':
+        // - 3 or 4 digits: #RGB or #RGBA (shorthand)
+        // - 6 digits:      #RRGGBB
+        // - 8 digits:      #RRGGBBAA
         static const std::regex color_regex(
             R"(#(?:[0-9A-Fa-f]{3,4}|[0-9A-Fa-f]{6}|[0-9A-Fa-f]{8}))",
             std::regex::ECMAScript
@@ -118,31 +191,33 @@ namespace {
             throw std::invalid_argument("Color must be hexadecimal, for example #1E3A8A.");
         }
 
-        std::transform(
-            value.begin(),
-            value.end(),
-            value.begin(),
-            [](unsigned char c) {
-                return static_cast<char>(std::toupper(c));
-            }
+        // Convert hex letters (a-f) to uppercase for uniform color code representation
+        std::transform(value.begin(), value.end(), value.begin(), [](const unsigned char c) {
+                           return static_cast<char>(std::toupper(c));
+                       }
         );
+
         return value;
     }
 } // namespace anonyme
 
+// @brief Parses command-line options and validates inputs using CLI11.
 CliArgs parse_args(const int argc, char **argv) {
     CliArgs args;
 
+    // Initialize CLI11 application with description and custom usage format
     CLI::App app{"Calculate per-node coverage from a GAM file using a CDX index."};
     app.usage("cdx_coverage <CDX> [GAM] [OPTIONS]");
 
     // ============================================================
     // 1. POSITIONAL INPUT FILES
     // ============================================================
+    // CDX file is mandatory and must exist on disk
     app.add_option("cdx", args.cdx_file, "Path to the binary CDX graph index.")
             ->required()
             ->check(CLI::ExistingFile);
 
+    // GAM file is optional at initial parse (validated post-parse based on mode)
     app.add_option("gam", args.gam_file, "Path to the GAM alignment file.")
             ->check(CLI::ExistingFile);
 
@@ -156,7 +231,7 @@ CliArgs parse_args(const int argc, char **argv) {
         "-q,--query",
         query_raw,
         "Scope of the coverage calculation (0-based coordinates).\n"
-        "Formats: COMPONENT or COMPONENT:START-END (accepts name or CID)\n"
+        "Formats: COMPONENT or COMPONENT:START-END (accepts name or ComponentID)\n"
         "Examples: -q chr1, -q 0, -q chr1 1000-5000"
     );
 
@@ -164,7 +239,9 @@ CliArgs parse_args(const int argc, char **argv) {
     group_query->add_option(
         "-c,--component-type",
         comp_type_raw,
-        "Graph coordinate mapping structure: 'linear'/'l' or 'circular'/'c'. Default: linear."
+        "Graph coordinate mapping structure:\n"
+        "'linear'/'l' or 'circular'/'c'.\n"
+        "Default: linear."
     );
 
     // ============================================================
@@ -176,19 +253,22 @@ CliArgs parse_args(const int argc, char **argv) {
     app.add_option(
         "-t,--worker-threads",
         worker_threads_arg,
-        "Number of threads used for computation (positive integer or 'auto'). Default: auto."
+        "Number of threads used for computation (positive integer or 'auto').\n"
+        "Default: half the machine threads."
     );
 
     app.add_option(
         "-T,--decompression-threads",
         decompression_threads_arg,
-        "Number of threads used for decompression of the GAM file (positive integer or 'auto'). Default: auto."
+        "Number of threads used for decompression of the GAM file (positive integer or 'auto').\n "
+        "Default: half the machine threads"
     );
 
     // ============================================================
     // 4. INSPECTION GROUP
     // ============================================================
     std::string inspect_val;
+    // Allow flag to be called without a value (0 args) or with a component name (1 arg)
     auto *opt_inspect = app.add_option(
         "-i,--inspect",
         inspect_val,
@@ -213,37 +293,64 @@ CliArgs parse_args(const int argc, char **argv) {
     auto *group_graph = app.add_option_group("GRAPH");
 
     int log_base_val = 10;
+    // Optional value flag: Defaults to base 10 if flag is present without an explicit integer
     auto *opt_log = group_graph->add_option(
         "--log", log_base_val, "Use logarithmic coverage scale. Base defaults to 10 if omitted."
     )->type_size(0, 1)->check(CLI::Range(2, 10000))->default_str("10");
 
-    group_graph->add_option("--smoothing", args.smoothing, "Moving-average window fraction [0.0, 1.0]. Default: 0.01.")
+    group_graph->add_option(
+                "--smoothing",
+                args.smoothing,
+                "Moving-average window fraction [0.0, 1.0].\n"
+                "Default: 0.01.")
             ->check(CLI::Range(0.0, 1.0));
 
-    group_graph->add_option("--max-point,--max-points", args.max_plot_points,
-                            "Maximum points passed to plotting backend. Use 0 to disable downsampling "
-                            "and plot at full resolution. Default: 10000.");
-    group_graph->add_option("--dpi", args.dpi, "Output graph resolution in DPI. Default: 300.")
+    group_graph->add_option(
+        "--max-point,--max-points",
+        args.max_plot_points,
+        "Maximum points passed to plotting backend.\n"
+        "Use 0 to disable downsampling and plot at full resolution.\n"
+        "Default: 10000.");
+
+    group_graph->add_option(
+                "--dpi",
+                args.dpi,
+                "Output graph resolution in DPI.\n"
+                "Default: 300.")
             ->check(CLI::PositiveNumber);
 
     std::string fig_size_raw;
-    group_graph->add_option("--fig-size", fig_size_raw, "Figure dimensions in inches (WIDTHxHEIGHT), e.g., '7x4.5'.");
+    group_graph->add_option(
+        "--fig-size",
+        fig_size_raw,
+        "Figure dimensions in inches (WIDTHxHEIGHT), e.g., '7x4.5'.");
 
     std::string line_color_raw;
-    group_graph->add_option("--color-line", line_color_raw, "Hexadecimal color for coverage line. Default: #1E3A8A.");
+    group_graph->add_option(
+        "--color-line",
+        line_color_raw,
+        "Hexadecimal color for coverage line.\n"
+        "Default: #1E3A8A.");
 
     std::string fill_color_raw;
-    group_graph->add_option("--color-filling", fill_color_raw,
-                            "Hexadecimal color for coverage fill. Default: #93C5FD.");
+    group_graph->add_option(
+        "--color-filling",
+        fill_color_raw,
+        "Hexadecimal color for coverage fill.\n"
+        "Default: #93C5FD.");
 
+    // Parse raw CLI inputs; CLI11 automatically prints error messages and help if required
     try {
         app.parse(argc, argv);
     } catch (const CLI::ParseError &e) {
         std::exit(app.exit(e));
     }
 
-    // --- Post-parse validation logic ---
+    // ============================================================
+    // POST-PARSE VALIDATION AND DYNAMIC CONFIGURATION
+    // ============================================================
 
+    // 1. Process Inspection Mode Settings
     if (*opt_inspect) {
         args.inspect.enabled = true;
         if (!inspect_val.empty()) {
@@ -251,15 +358,17 @@ CliArgs parse_args(const int argc, char **argv) {
         }
     }
 
+    // Enforce mandatory GAM file presence if NOT running in inspection mode
     if (!args.inspectMode() && args.gam_file.empty()) {
         std::cerr << "Error: GAM file argument is required unless running in inspect mode (-i/--inspect).\n";
         std::exit(1);
     }
 
-    // --- Dynamic Resolution of Worker & Decompression Threads ---
+    // 2. Dynamic Thread Resolution based on Available Hardware
     const int machine_threads = get_hardware_threads();
 
     try {
+        // Resolve worker thread count
         if (worker_threads_arg == "auto") {
             args.worker_threads = machine_threads;
         } else {
@@ -267,9 +376,11 @@ CliArgs parse_args(const int argc, char **argv) {
             if (requested <= 0) {
                 throw std::invalid_argument("Worker threads must be positive or 'auto'.");
             }
+            // Cap manually requested threads to available hardware maximum
             args.worker_threads = std::min(requested, machine_threads);
         }
 
+        // Resolve decompression thread count (defaults to half of hardware threads)
         if (decompression_threads_arg == "auto") {
             args.decompression_threads = std::max(1, machine_threads / 2);
         } else {
@@ -277,6 +388,7 @@ CliArgs parse_args(const int argc, char **argv) {
             if (requested <= 0) {
                 throw std::invalid_argument("Decompression threads must be positive or 'auto'.");
             }
+            // Cap manually requested threads to available hardware maximum
             args.decompression_threads = std::min(requested, machine_threads);
         }
     } catch (const std::exception &e) {
@@ -284,6 +396,7 @@ CliArgs parse_args(const int argc, char **argv) {
         std::exit(1);
     }
 
+    // 3. Parse Custom Data Formats (Query, Component Type, Hex Colors)
     if (!query_raw.empty()) {
         try {
             args.query = parse_query(query_raw);
@@ -324,12 +437,15 @@ CliArgs parse_args(const int argc, char **argv) {
         }
     }
 
+    // Ensure at least one output mode remains active
     if (args.no_graph && args.no_stats && args.no_table) {
         std::cerr << "Error: All outputs are disabled (--no-graph, --no-stats, --no-table).\n";
         std::exit(1);
     }
 
+    // 4. Determine Output Figure Dimensions
     if (!fig_size_raw.empty()) {
+        // Parse explicit user dimensions (e.g., "7x4.5")
         try {
             args.custom_figure_size = parse_fig_size(fig_size_raw);
             args.figure_width = args.custom_figure_size->first;
@@ -339,20 +455,21 @@ CliArgs parse_args(const int argc, char **argv) {
             std::exit(1);
         }
     } else {
+        // Compute default canvas aspect ratios based on query presence and graph topology
         const bool is_circular = (args.component_type == ComponentType::Circular);
         const bool has_query = args.query.has_value();
 
         if (!has_query && !is_circular) {
-            args.figure_width = 5.5;
+            args.figure_width = 5.5; // Standard linear overview
             args.figure_height = 3.5;
         } else if (!has_query && is_circular) {
-            args.figure_width = 4.0;
+            args.figure_width = 4.0; // Square ratio for whole circular genome plots
             args.figure_height = 4.0;
         } else if (has_query && !is_circular) {
-            args.figure_width = 7.0;
+            args.figure_width = 7.0; // Wide aspect for detailed linear region focus
             args.figure_height = 4.5;
         } else {
-            args.figure_width = 7.0;
+            args.figure_width = 7.0; // Large square for detailed circular sub-region
             args.figure_height = 7.0;
         }
     }

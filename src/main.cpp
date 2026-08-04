@@ -1,3 +1,22 @@
+/**
+ * @file main.cpp
+ * @brief Main entry point for the CDX Coverage application.
+ *
+ * CDX Coverage computes per-position coverage statistics from GAM
+ * alignments projected onto a graph indexed by a CDX file. Depending on
+ * the command-line options, the program can:
+ *
+ *   - Analyze the entire pangenome (global mode).
+ *   - Analyze a single component or genomic interval (query mode).
+ *   - Inspect indexed components and metadata (inspection mode).
+ *   - Generate coverage tables, statistical reports, and graphical
+ *     visualizations.
+ *
+ * This file contains the top-level application logic responsible for
+ * argument parsing, component resolution, pipeline dispatch, execution
+ * timing, status reporting, and fatal-error handling.
+ */
+
 #include "cdx_loader.h"
 #include "cli.hpp"
 #include "config.h"
@@ -28,9 +47,30 @@ namespace {
     constexpr std::size_t GAM_BATCH_SIZE = 2048;
     constexpr std::size_t TERMINAL_WIDTH = 77;
 
-    /**
-     * @brief Exécute le pipeline de couverture globale.
-     */
+   /**
+    * @brief Execute the complete global coverage-analysis pipeline.
+    *
+    * Runs the full pangenome workflow from input loading through coverage
+    * generation and output production. The pipeline:
+    *
+    * 1. Loads the global CDX index and component metadata.
+    * 2. Processes GAM alignments and accumulates node-level coverage.
+    * 3. Projects coverage into index space and expands it into genomic coordinate space.
+    * 4. Generates the user-requested outputs:
+    *    - Coverage table (TSV)
+    *    - Coverage statistics report
+    *    - Coverage graph (linear or circular)
+    *
+    * Progress information and execution timings are reported for each stage.
+    * Output generation steps are executed only when enabled through the
+    * corresponding command-line arguments.
+    *
+    * @param args Command-line configuration controlling input files,
+    *   processing parameters, output selection, and rendering options.
+    *
+    * @throws std::exception Propagates any exception raised during data
+    *   loading, coverage computation, output generation, or rendering.
+    */
     void runGlobalPipeline(const CliArgs &args) {
         const int output_steps =
                 static_cast<int>(args.generateTable()) +
@@ -194,7 +234,37 @@ namespace {
     }
 
     /**
-     * @brief Exécute le pipeline de couverture localisée.
+     * @brief Execute the query-level coverage-analysis pipeline.
+     *
+     * Runs the complete workflow for a single component or component subregion.
+     * The pipeline:
+     *
+     *   1. Loads the requested component (or query interval) from the CDX index.
+     *   2. Processes GAM alignments and accumulates node-level coverage.
+     *   3. Projects coverage into index space, expands it into genomic
+     *      coordinates, and restricts the result to the requested query region.
+     *   4. Generates the user-requested outputs:
+     *        - Coverage table (TSV)
+     *        - Coverage statistics report
+     *        - Coverage graph (linear or circular)
+     *
+     * Query ranges may represent either a complete component or a specific
+     * genomic interval. Circular queries may additionally span the component
+     * origin, in which case the circular plotting backend preserves the full
+     * component coverage context required for wrap-around smoothing and
+     * visualization.
+     *
+     * Progress information and execution timings are reported for each stage.
+     * Output-generation steps are executed only when enabled through the
+     * corresponding command-line arguments.
+     *
+     * @param args Command-line configuration controlling input files,
+     *        processing parameters, output selection, and rendering options.
+     * @param target_cid Component identifier selected for analysis.
+     * @param target_name Human-readable name of the selected component.
+     *
+     * @throws std::exception Propagates any exception raised during data
+     *         loading, coverage computation, output generation, or rendering.
      */
     void runQueryPipeline(
         const CliArgs &args,
@@ -402,6 +472,23 @@ namespace {
     }
 } // namespace
 
+/**
+* @brief Entry point of the CDX coverage analysis application.
+*
+* Parses command-line arguments, initializes component-resolution metadata,
+* and dispatches execution to the appropriate operating mode:
+*
+*   - Inspection mode: display component information from the CDX index.
+*   - Query mode: analyze a single component or query interval.
+*   - Global mode: analyze the entire pangenome.
+*
+* The function also handles output-directory creation, runtime reporting,
+* component-name resolution, and top-level exception handling.
+*
+* @param argc Number of command-line arguments.
+* @param argv Command-line argument array.
+* @return EXIT_SUCCESS on successful completion, EXIT_FAILURE if an error occurs.
+*/
 int main(int argc, char **argv) {
     using Clock = std::chrono::steady_clock;
     const auto total_start = Clock::now();
@@ -409,19 +496,14 @@ int main(int argc, char **argv) {
     try {
         const CliArgs args = parse_args(argc, argv);
 
-        /*
-         * En mode inspect, ne pas créer inutilement le répertoire
-         * de sortie.
-         */
+        // Inspection mode does not generate output files, so there is
+        // no need to create the output directory.
         if (!args.inspectMode())
             std::filesystem::create_directories(args.output_directory);
 
         ComponentResolver resolver;
 
-        /*
-         * Ce chargement sert seulement à associer les noms de
-         * composantes à leurs CID.
-         */
+        // This metadata load is used only to build the mapping between component names and component IDs.
         {
             const cdx::GlobalData metadata = cdx::loadGlobal(args.cdx_file);
 
@@ -454,14 +536,17 @@ int main(int argc, char **argv) {
             return EXIT_SUCCESS;
         }
 
-        // PROGRAM HEADER
+        // Display program banner.
         std::cerr
                 << std::string(TERMINAL_WIDTH, '=') << '\n'
                 << std::setw(46) << "CDX COVERAGE" << '\n'
                 << std::string(TERMINAL_WIDTH, '=') << '\n';
 
 
+        // Dispatch execution according to the requested analysis mode.
         if (args.query) {
+
+            // Resolve the user-specified component name or CID before running the query-level pipeline.
             const ResolvedComponent resolved = resolver.resolve(args.query->component);
 
 

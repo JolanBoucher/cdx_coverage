@@ -5,7 +5,6 @@
 #include <vg/vg.pb.h>
 #include <vg/io/message_iterator.hpp>
 #include <vg/io/registry.hpp>
-
 #include <google/protobuf/arena.h>
 
 #include <algorithm>
@@ -21,6 +20,7 @@
 #include <vector>
 #include <omp.h>
 
+// Processing and analyzing GAM alignments in parallel
 GamMappingStats process_gam(
     const std::string& gam_file,
     std::vector<cdx::Coverage>& target,
@@ -29,23 +29,15 @@ GamMappingStats process_gam(
     int decompression_threads,
     int worker_threads
 ) {
-    // 1. Validation des arguments
+    // 1. Validate mandatory function arguments
     if (batch_size == 0) {
-        throw std::invalid_argument(
-            "batch_size must be strictly greater than zero."
-        );
+        throw std::invalid_argument("batch_size must be strictly greater than zero.");
     }
-
     if (decompression_threads <= 0) {
-        throw std::invalid_argument(
-            "decompression_threads must be strictly greater than zero."
-        );
+        throw std::invalid_argument("decompression_threads must be strictly greater than zero.");
     }
-
     if (target.empty()) {
-        throw std::invalid_argument(
-            "Target coverage vector must not be empty."
-        );
+        throw std::invalid_argument("Target coverage vector must not be empty.");
     }
 
     std::ifstream gam_stream(gam_file, std::ios::in | std::ios::binary);
@@ -56,9 +48,7 @@ GamMappingStats process_gam(
 
     const std::size_t coverage_size = target.size();
 
-    /*
-     * Préserve les nœuds locaux appartenant réellement à la query.
-     */
+    // Precompute a fast lookup mask to preserve local nodes belonging strictly to the query region
     std::vector<std::uint8_t> valid_nodes(coverage_size, 0);
 
     for (std::size_t node_offset = 0; node_offset < coverage_size; ++node_offset) {
@@ -67,24 +57,28 @@ GamMappingStats process_gam(
         }
     }
 
-    // ajoute les worker threads passer en args
     const int active_threads = worker_threads;
 
+    // Allocate thread-local structures to prevent false sharing and race conditions during computation
     std::vector local_coverages(static_cast<std::size_t>(active_threads), std::vector<std::uint32_t>(coverage_size, 0));
     std::vector<GamMappingStats> local_stats(static_cast<std::size_t>(active_threads));
     std::exception_ptr reader_exception;
 
     try {
+        // Initialize message iterator with built-in multithreaded GAM decompression
         vg::io::MessageIterator message_it(gam_stream, false, decompression_threads);
+
 #pragma omp parallel num_threads(active_threads)
         {
 #pragma omp single
             {
                 try {
+                    // Main single-threaded loop feeding batches to the OpenMP task pool
                     while (message_it.has_current()) {
-                        auto batch = std::make_unique<std::vector<std::string> >();
+                        auto batch = std::make_unique<std::vector<std::string>>();
                         batch->reserve(batch_size);
 
+                        // Group serialized alignments into batches to optimize task granularity
                         while (message_it.has_current() && batch->size() < batch_size) {
                             auto tag_and_data = std::move(message_it.take());
 
@@ -99,10 +93,11 @@ GamMappingStats process_gam(
                         if (batch->empty()) continue;
                         auto *raw_batch_ptr = batch.release();
 
+                        // Dispatch each alignment batch as an asynchronous parallel task
 #pragma omp task firstprivate(raw_batch_ptr)
                         {
-                            std::unique_ptr<std::vector<std::string> > owned_batch(raw_batch_ptr);
-                            const std::size_t tid = static_cast<std::size_t>(omp_get_thread_num());
+                            std::unique_ptr<std::vector<std::string>> owned_batch(raw_batch_ptr);
+                            const auto tid = static_cast<std::size_t>(omp_get_thread_num());
 
                             std::uint32_t *const coverage = local_coverages[tid].data();
 
@@ -116,9 +111,8 @@ GamMappingStats process_gam(
                             // everything is released in one bulk sweep when
                             // the arena is destroyed at the end of the task -
                             // no per-message Clear() traversal, no per-field
-                            // free(). batch_size (2048, cf. GAM_BATCH_SIZE in
-                            // main.cpp) bounds how much a single arena grows
-                            // to before being freed.
+                            // free(). batch_size bounds how much a single arena
+                            // grows to before being freed.
                             google::protobuf::Arena arena;
 
                             for (const std::string &serialized: *owned_batch) {
@@ -145,26 +139,26 @@ GamMappingStats process_gam(
 
                                     if (signed_node_id <= 0) continue;
 
-                                    // Le read est considéré comme mapped dès qu'il contient au moins un node ID positif
+                                    // Mark read as mapped upon encountering at least one positive node ID
                                     read_is_mapped = true;
 
                                     const auto node_id = static_cast<cdx::Nid>(signed_node_id);
 
-                                    // Nœud situé avant la plage locale.
+                                    // Skip nodes located upstream of the local range
                                     if (node_id < nid_min) {
                                         continue;
                                     }
 
                                     const cdx::Nid raw_offset = node_id - nid_min;
 
-                                    // Nœud situé après la plage locale.
+                                    // Skip nodes located downstream of the local range
                                     if (raw_offset >= static_cast<cdx::Nid>(coverage_size)) {
                                         continue;
                                     }
 
                                     const std::size_t node_offset = static_cast<std::size_t>(raw_offset);
 
-                                    // Nœud dans la composante, mais exclu de la query.
+                                    // Skip nodes within the component but excluded from the specific query scope
                                     if (!valid_nodes[node_offset]) {
                                         continue;
                                     }
@@ -197,6 +191,7 @@ GamMappingStats process_gam(
         reader_exception = std::current_exception();
     }
 
+    // Propagate any exceptions caught during asynchronous stream processing
     if (reader_exception) {
         try {
             std::rethrow_exception(reader_exception);
@@ -205,13 +200,13 @@ GamMappingStats process_gam(
         }
     }
 
-    // Agrégation des statistiques thread-local
+    // Aggregate thread-local statistics into global metrics
     GamMappingStats stats;
     for (const GamMappingStats &thread_stats: local_stats) {
         stats += thread_stats;
     }
 
-    // Vérification des invariants de statistiques
+    // Validate fundamental statistical invariants
     if (stats.total != stats.mapped + stats.unmapped) {
         throw std::logic_error("Inconsistent GAM mapping statistics: total != mapped + unmapped.");
     }
@@ -236,9 +231,7 @@ GamMappingStats process_gam(
             << '\n';
 #endif
 
-    /*
-     * Réduction du vecteur de couverture local vers le vecteur target final.
-     */
+    // Parallel reduction of thread-local coverage vectors into the final target vector
 #pragma omp parallel num_threads(active_threads)
     {
         const std::size_t worker = static_cast<std::size_t>(omp_get_thread_num());
@@ -246,6 +239,7 @@ GamMappingStats process_gam(
         const std::size_t block = (coverage_size + workers - 1) / workers;
         const std::size_t begin = worker * block;
         const std::size_t end = std::min(begin + block, coverage_size);
+
         for (std::size_t node_offset = begin;
              node_offset < end;
              ++node_offset) {
@@ -256,6 +250,7 @@ GamMappingStats process_gam(
                 total_coverage += source[node_offset];
             }
 
+            // Clamp coverage values to prevent integer overflow past cdx::Coverage capacity
             if (total_coverage > static_cast<std::uint64_t>(std::numeric_limits<cdx::Coverage>::max())) {
                 target[node_offset] = std::numeric_limits<cdx::Coverage>::max();
             } else {

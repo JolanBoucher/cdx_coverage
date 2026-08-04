@@ -91,31 +91,56 @@ class _Reader:
         self.f = f
 
     def u8(self) -> int:
+        """Read an unsigned 8-bit integer."""
         return struct.unpack("<B", self.f.read(1))[0]
 
     def i32(self) -> int:
+        """Read a signed 32-bit integer."""
         return struct.unpack("<i", self.f.read(4))[0]
 
     def u32(self) -> int:
+        """Read an unsigned 32-bit integer."""
         return struct.unpack("<I", self.f.read(4))[0]
 
     def u64(self) -> int:
+        """Read an unsigned 64-bit integer."""
         return struct.unpack("<Q", self.f.read(8))[0]
 
     def f64(self) -> float:
+        """Read a 64-bit floating-point value."""
         return struct.unpack("<d", self.f.read(8))[0]
 
     def string(self) -> str:
+        """Read a length-prefixed UTF-8 string."""
         length = struct.unpack("<H", self.f.read(2))[0]
-        return self.f.read(length).decode("utf-8") if length else ""
+        return self.f.read(length).decode("utf-8")
 
     def u64_array(self, count: int) -> np.ndarray:
-        return np.fromfile(self.f, dtype="<u8", count=count)
+        """Read an array of unsigned 64-bit integers."""
+        if count == 0:
+            return np.empty(0, dtype=np.uint64)
+        data = self.f.read(8 * count)
+        return np.frombuffer(data, dtype="<u8", count=count)
 
     def f64_array(self, count: int) -> np.ndarray:
-        return np.fromfile(self.f, dtype="<f8", count=count)
+        """Read an array of 64-bit floating-point values."""
+        if count == 0:
+            return np.empty(0, dtype=np.float64)
+        data = self.f.read(8 * count)
+        return np.frombuffer(data, dtype="<f8", count=count)
 
     def package(self) -> dict:
+        """
+        Read and deserialize a CircularPlotPackage from the request stream.
+        The package is expected to follow the binary layout produced by the
+        C++ BinaryRequestWriter::package() implementation. All fields are read
+        in the order they were serialized and returned as a dictionary suitable
+        for downstream rendering.
+        Returns:
+        dict: A circular-plot package containing component metadata,
+        plotting coordinates, visibility flags, axis configuration, and
+        tick-mark information.
+        """
         component_name = self.string()
         compo_length = self.u64()
         query_start = self.u64()
@@ -154,6 +179,21 @@ class _Reader:
 
 
 def _load_request(path) -> dict:
+    """
+    Load and validate a serialized circular-plot request file.
+    Reads the binary request format produced by the C++ plotting backend,
+    validates the file signature and format version, and deserializes the
+    contents into a Python dictionary suitable for rendering.
+    Both query mode (single plot) and global mode (multi-panel plot grid)
+    are supported.
+
+    Args: path: Path to the binary request file.
+
+    Returns: dict: Parsed request contents, including rendering configuration
+    and one or more plot packages.
+
+    Raises: ValueError: If the file signature, format version, or mode is invalid or unsupported.
+    """
     with open(path, "rb") as fh:
         r = _Reader(fh)
 
@@ -213,10 +253,32 @@ def _load_request(path) -> dict:
 # ---------------------------------------------------------------------------
 
 def _plot_circular_graph(axis, pkg: dict, query_mode: bool, line_color: str, fill_color: str) -> None:
+    """
+    Render a single circular coverage plot from a precomputed plot package.
+
+    Draws a circular coverage track using the data prepared by the C++
+    preprocessing pipeline. The function handles full-component plots,
+    linear query intervals, and origin-crossing circular intervals, while
+    preserving NaN regions as visual gaps.
+
+    Coverage values, axis scaling, tick locations, and optional logarithmic
+    transformations are assumed to have been computed before rendering.
+
+    Args:
+        axis: Matplotlib axis onto which the plot is rendered.
+        pkg: Deserialized CircularPlotPackage.
+        query_mode: True for query reports, False for global multi-component
+        plots.
+        line_color: Coverage line color.
+        fill_color: Coverage fill color.
+    """
+
+    # Skip rendering when the preprocessing stage determined that no drawable coverage data exists.
     if not pkg["visible"]:
         axis.set_visible(False)
         return
 
+    # Extract component metadata and plotting configuration from the package.
     component_id = pkg["component_name"]
     compo_start, compo_end = 0, int(pkg["compo_length"])
     compo_length = compo_end - compo_start
@@ -233,10 +295,12 @@ def _plot_circular_graph(axis, pkg: dict, query_mode: bool, line_color: str, fil
     display_ticks = pkg["tick_display_values"]
     log_base = pkg["log_base"] if pkg["logarithmic"] else None
 
+    # Nothing to render if the downsampled series is empty or contains only NaN gap markers.
     if local_x.size == 0 or np.all(np.isnan(plot_y)):
         axis.set_visible(False)
         return
 
+    # Create the circular track that will contain the coverage profile.
     circos = Circos(sectors={str(component_id): (compo_start, compo_end)})
     sector = circos.sectors[0]
 
@@ -247,13 +311,20 @@ def _plot_circular_graph(axis, pkg: dict, query_mode: bool, line_color: str, fil
     track.axis(fc="#F8FAFC", ec="#CBD5E1", lw=0.5)
 
     def draw_segment(x: np.ndarray, y: np.ndarray) -> None:
-        """Draw contiguous finite segments to prevent rendering gaps across NaNs."""
+        """
+        Draw contiguous finite coverage segments.
+
+        NaN values represent masked regions and should appear as visual gaps.
+        The series is therefore split into contiguous finite blocks and each
+        block is rendered independently.
+        """
         if x.size == 0 or y.size == 0:
             return
         finite_mask = np.isfinite(y)
         if not np.any(finite_mask):
             return
 
+        # Split the series wherever NaN gaps break continuity.
         finite_indices = np.flatnonzero(finite_mask)
         split_positions = np.where(np.diff(finite_indices) > 1)[0] + 1
 
@@ -274,14 +345,20 @@ def _plot_circular_graph(axis, pkg: dict, query_mode: bool, line_color: str, fil
                 color=line_color, lw=1.0,
             )
 
+    # Close the circular profile by repeating the first point at the end of the component.
     if full_component:
         display_x = np.append(local_x + compo_start, compo_end)
         display_y = np.append(plot_y, plot_y[0])
         draw_segment(display_x, display_y)
+
+    # Translate traversal-relative coordinates back into component-space coordinates for display.
     elif not crosses_origin:
         display_x = np.append(local_x + query_start, query_end + 1)
         display_y = np.append(plot_y, plot_y[-1])
         draw_segment(display_x, display_y)
+
+    # The traversal was linearized during preprocessing.
+    # Split it back into the two genomic segments located on either side of the circular origin.
     else:
         first_segment_length = compo_end - query_start
         first_mask = local_x < first_segment_length
@@ -292,6 +369,8 @@ def _plot_circular_graph(axis, pkg: dict, query_mode: bool, line_color: str, fil
         second_x = local_x[second_mask] - first_segment_length + compo_start
         second_y = plot_y[second_mask]
 
+        # Estimate the coverage value at the origin crossing
+        # so both rendered segments meet smoothly at the circular boundary.
         finite_mask = np.isfinite(plot_y)
         if np.count_nonzero(finite_mask) >= 2:
             origin_value = float(np.interp(first_segment_length, local_x[finite_mask], plot_y[finite_mask]))
@@ -310,16 +389,21 @@ def _plot_circular_graph(axis, pkg: dict, query_mode: bool, line_color: str, fil
             second_y = np.append(second_y, second_y[-1])
             draw_segment(second_x, second_y)
 
+    # Generate evenly spaced genomic coordinate labels around the component.
+    # Skip the position-0 tick: on a closed circular track it sits right next
+    # to (visually behind) the component's end label, so it's dropped rather
+    # than drawn twice in almost the same spot.
     tick_interval = max(1, compo_length // 6)
-    tick_positions = np.arange(compo_start, compo_end, tick_interval, dtype=np.int64)
+    tick_positions = np.arange(compo_start + tick_interval, compo_end, tick_interval, dtype=np.int64)
 
     track.xticks(
         tick_positions,
-        [f"{position:,}" for position in tick_positions],
+        [f"{position:,}".replace(",", "'") + " bp" for position in tick_positions],
         label_size=7,
         label_orientation="horizontal",
     )
 
+    # Build a description of the displayed genomic interval.
     if full_component:
         query_label = "Complete component"
     elif crosses_origin:
@@ -327,8 +411,10 @@ def _plot_circular_graph(axis, pkg: dict, query_mode: bool, line_color: str, fil
     else:
         query_label = f"Query: {query_start:,}-{query_end:,} bp"
 
+    # Describe the coverage scaling mode shown in the plot.
     scale_label = f"Log scale: base {log_base}" if log_base is not None else "Linear scale"
 
+    # Place summary information in the center of the circular plot.
     if query_mode:
         center_text = f"Component {component_id}\nLength: {compo_length:,} bp\n{query_label}\n"
     else:
@@ -340,7 +426,10 @@ def _plot_circular_graph(axis, pkg: dict, query_mode: bool, line_color: str, fil
     angles = np.linspace(0.0, 2.0 * np.pi, 720)
     label_angle = np.deg2rad(337.5)
 
+    # Draw radial guide rings corresponding to the coverage tick values.
     for raw_tick, display_tick in zip(raw_ticks, display_ticks):
+
+        # Zero is not represented on logarithmic scales.
         if log_base is not None and raw_tick == 0:
             continue
 
@@ -358,6 +447,18 @@ def _plot_circular_graph(axis, pkg: dict, query_mode: bool, line_color: str, fil
 # ---------------------------------------------------------------------------
 
 def _render_query(request: dict, output_png: Path) -> None:
+    """
+    Render a single-component circular coverage plot.
+
+    Creates a polar figure, renders the circular coverage graph described
+    by the request package, and saves the resulting image to the specified
+    output file. The matplotlib figure is always released, even if
+    rendering or file output fails.
+
+    Args:
+        request: Parsed query-mode request containing plotting parameters and a single CircularPlotPackage.
+        output_png: Destination path for the generated PNG image.
+    """
     figure = plt.figure(figsize=(request["fig_width"], request["fig_height"]), dpi=request["dpi"])
     axis = figure.add_subplot(1, 1, 1, projection="polar")
 
@@ -377,24 +478,30 @@ def _render_query(request: dict, output_png: Path) -> None:
 
 
 def _render_panel_worker(args: tuple) -> str | None:
-    """Renders ONE component's polar panel to its own fixed-size PNG.
+    """
+    Render a single circular-plot panel to a standalone PNG image.
 
-    Runs in a worker process (multiprocessing.Pool): each pycirclize/
-    matplotlib panel is independent CPU-bound work (~1s/panel measured),
-    and Python's GIL means a single process can't parallelize that across
-    cores even with threads - hence a process pool. Must be a module-level
-    function (not a closure) to stay picklable under the "spawn" start
-    method (the default on macOS).
+    This function executes in a multiprocessing worker and is responsible
+    for rendering exactly one component package. Panel rendering is CPU-bound
+    and independent across components, making process-level parallelism more
+    effective than threading.
 
-    No `bbox_inches="tight"`: every panel must come out at EXACTLY
-    `panel_px x panel_px` pixels for the grid composite in _render_global to
-    line cells up correctly. This also happens to be faster (tight bbox
-    computation requires an extra full render pass).
+    The function is defined at module scope to remain picklable under the
+    multiprocessing "spawn" start method.
+
+    Each output image is generated at a fixed size so that _render_global()
+    can assemble all panels into a correctly aligned grid without additional
+    resizing or layout adjustments.
+
+    Args:
+        args: Tuple containing the plot package, rendering parameters, and output path.
+
+    Returns: The generated panel image path, or None if the component contains
+             no visible data and no panel was rendered.
     """
     pkg, line_color, fill_color, dpi, panel_size_in, panel_path = args
 
-    if not pkg["visible"]:
-        return None
+    if not pkg["visible"]: return None
 
     figure = plt.figure(figsize=(panel_size_in, panel_size_in), dpi=dpi)
     axis = figure.add_subplot(1, 1, 1, projection="polar")
@@ -416,54 +523,88 @@ def _render_panel_worker(args: tuple) -> str | None:
 
 
 def _render_global(request: dict, output_png: Path, work_dir: Path) -> None:
+    """
+    Render a multi-component circular coverage figure.
+
+    Each component is first rendered into an independent panel image.
+    Panel rendering is parallelized across multiple worker processes when
+    beneficial. The generated panel images are then assembled into a single
+    grid matching the layout specified in the request.
+
+    Args:
+        request: Parsed global-mode rendering request.
+        output_png: Destination path for the final composite PNG.
+        work_dir: Temporary directory used to store intermediate panel images.
+
+    Returns: None
+    """
     packages = request["packages"]
     rows, columns = request["rows"], request["columns"]
     component_count = len(packages)
     dpi = request["dpi"]
 
+    # Use square panels large enough to accommodate circular plots without
+    # clipping. The final grid is assembled from these fixed-size images.
     subplot_size = max(request["subplot_width"], request["subplot_height"], 5.5)
     panel_px = max(1, round(subplot_size * dpi))
 
+    # One rendering task per component package.
     tasks = [
         (pkg, request["line_color"], request["fill_color"], dpi, subplot_size, str(work_dir / f"panel_{i}.png"))
         for i, pkg in enumerate(packages)
     ]
 
-    # cpu_count() can return None on some platforms; component_count caps
-    # worker count so we never spin up more processes than there is work.
+    # Use at most one worker per component and never exceed the number of available CPU cores.
     worker_count = max(1, min(component_count, os.cpu_count() or 1))
 
+    # Avoid multiprocessing overhead when there is no opportunity for
+    # meaningful parallelism.
     if worker_count == 1:
         # Skip Pool entirely for a single panel/core: avoids paying a second
         # process's interpreter+import startup cost for zero parallel gain.
         panel_paths = [_render_panel_worker(task) for task in tasks]
     else:
         import multiprocessing
+
+        # Render component panels in parallel. Each worker produces one PNG.
         with multiprocessing.Pool(processes=worker_count) as pool:
             panel_paths = pool.map(_render_panel_worker, tasks)
 
-    # Composite panels into the final grid via matplotlib's own PNG
-    # reader/writer (no Pillow dependency needed - PNG doesn't require it).
-    # White background so empty trailing grid cells and invisible/masked
-    # components render as blank cells, exactly like set_visible(False) did
-    # in the previous single-figure approach.
+    # Allocate a white canvas that will hold the final panel grid.
     canvas = np.ones((panel_px * rows, panel_px * columns, 3), dtype=np.float32)
 
+    # Copy each rendered panel into its corresponding grid cell.
     for i, panel_path in enumerate(panel_paths):
+
+        # Invisible components produce no panel image and remain as blank cells.
         if panel_path is None:
             continue
         panel = mpimg.imread(panel_path)
+
+        # Remove alpha channel if present to match the RGB canvas layout.
         if panel.shape[2] == 4:
             panel = panel[:, :, :3]
         height, width = panel.shape[:2]
+
+        # Convert the linear panel index into a grid location.
         row, col = divmod(i, columns)
         top, left = row * panel_px, col * panel_px
         canvas[top:top + height, left:left + width, :] = panel
 
+    # Convert the linear panel index into a grid location.
     mpimg.imsave(output_png, canvas)
 
 
 def main() -> int:
+    """
+    Entry point for the circular-plot renderer.
+
+    Loads a serialized plotting request, creates the requested circular
+    coverage visualization, and writes the resulting PNG image. Supports
+    both query-mode (single plot) and global-mode (multi-panel) rendering.
+
+    Returns: Process exit status code (0 on success, non-zero on error).
+    """
     if len(sys.argv) != 3:
         print(f"Usage: {sys.argv[0]} <input.bin> <output.png>", file=sys.stderr)
         return 2

@@ -1,3 +1,17 @@
+/**
+ * @file config.h
+ * @brief Project-wide configuration, constants, and lightweight utility helpers.
+ *
+ * Centralizes commonly used sentinel values, default output file names, and
+ * small reusable utilities shared across the coverage analysis pipeline.
+ * This header contains infrastructure-level helpers that are used throughout
+ * the project, including execution timing facilities (`ScopedTimer`) and
+ * integer formatting helpers for human-readable logging and reporting.
+ *
+ * All entities are defined in the `cfg` namespace and are intended to be
+ * lightweight, header-only utilities with minimal dependencies.
+ */
+
 #pragma once
 #ifndef CDX_COVERAGE_CONFIG_H
 #define CDX_COVERAGE_CONFIG_H
@@ -22,69 +36,74 @@ namespace cfg {
 
     /** @brief RAII timer measuring execution duration with steady_clock and exception tracking. */
     class ScopedTimer {
-public:
-    using Clock = std::chrono::steady_clock;
+    public:
+        using Clock = std::chrono::steady_clock;
 
-    /**
-     * @brief Construct timer and capture current clock time and active exception count.
-     * @param step_name Label displayed upon timer completion or failure.
-     */
-    explicit ScopedTimer(std::string step_name)
-        : name_(std::move(step_name)),
-          start_(Clock::now()),
-          uncaught_on_entry_(std::uncaught_exceptions()) {}
-    /**
-     * @brief Dynamically updates the step label displayed upon timer destruction.
-     * @param new_name The new string description for the timed step.
-     */
-    void update_name(std::string new_name) {
-        name_ = std::move(new_name);
-    }
-
-    /**
-     * @brief Destructor that computes elapsed time and logs completion or failure status.
-     * @note Marked noexcept to prevent throwing during unwinding.
-     */
-    ~ScopedTimer() noexcept {
-        try {
-            const auto end = Clock::now();
-            const double seconds = std::chrono::duration<double>(end - start_).count();
-            const bool failed = std::uncaught_exceptions() > uncaught_on_entry_;
-            print_step_time(name_, seconds, failed);
-        } catch (...) {
-            // Guarantee noexcept behavior in destructor
+        /**
+         * @brief Construct timer and capture current clock time and active exception count.
+         * @param step_name Label displayed upon timer completion or failure.
+         */
+        explicit ScopedTimer(std::string step_name)
+            : name_(std::move(step_name)),
+              start_(Clock::now()),
+              uncaught_on_entry_(std::uncaught_exceptions()) {
         }
-    }
 
-    // Prevent copy/move to avoid duplicate measurement prints
-    ScopedTimer(const ScopedTimer&) = delete;
-    ScopedTimer& operator=(const ScopedTimer&) = delete;
-    ScopedTimer(ScopedTimer&&) = delete;
-    ScopedTimer& operator=(ScopedTimer&&) = delete;
+        /**
+         * @brief Dynamically updates the step label displayed upon timer destruction.
+         * @param new_name The new string description for the timed step.
+         */
+        void update_name(std::string new_name) {
+            name_ = std::move(new_name);
+        }
 
-private:
-    std::string name_;        ///< Name of the pipeline step being measured.
-    Clock::time_point start_; ///< Start timestamp recorded on construction.
-    int uncaught_on_entry_;   ///< Number of uncaught exceptions present at construction.
+        /**
+         * @brief Destructor that computes elapsed time and logs completion or failure status.
+         * @note Marked noexcept to prevent throwing during unwinding.
+         */
+        ~ScopedTimer() noexcept {
+            try {
+                const auto end = Clock::now();
+                const double seconds = std::chrono::duration<double>(end - start_).count();
+                const bool failed = std::uncaught_exceptions() > uncaught_on_entry_;
+                print_step_time(name_, seconds, failed);
+            } catch (...) {
+                // Guarantee noexcept behavior in destructor
+            }
+        }
 
-    /**
-     * @brief Formats and prints the timing output to std::cerr.
-     * @param step_name Label of the executed step.
-     * @param seconds Elapsed duration in seconds.
-     * @param failed True if step failed due to an uncaught exception.
-     */
-    static void print_step_time(const std::string& step_name, const double seconds, const bool failed) {
-        std::cerr << "  - " << std::left << std::setw(50) << step_name
-                  << (failed ? " Failed after   " : " Completed in ")
-                  << std::right << std::setw(7) << std::fixed
-                  << std::setprecision(4) << seconds << " s\n";
-    }
-};
+        // Prevent copy/move to avoid duplicate measurement prints
+        ScopedTimer(const ScopedTimer &) = delete;
 
-   // tiny formating function that transform interger like this 1534430 to this 1,534,430
-    template<typename Integer> [[nodiscard]]
+        ScopedTimer &operator=(const ScopedTimer &) = delete;
+
+        ScopedTimer(ScopedTimer &&) = delete;
+
+        ScopedTimer &operator=(ScopedTimer &&) = delete;
+
+    private:
+        std::string name_; ///< Name of the pipeline step being measured.
+        Clock::time_point start_; ///< Start timestamp recorded on construction.
+        int uncaught_on_entry_; ///< Number of uncaught exceptions present at construction.
+
+        /**
+         * @brief Formats and prints the timing output to std::cerr.
+         * @param step_name Label of the executed step.
+         * @param seconds Elapsed duration in seconds.
+         * @param failed True if step failed due to an uncaught exception.
+         */
+        static void print_step_time(const std::string &step_name, const double seconds, const bool failed) {
+            std::cerr << "  - " << std::left << std::setw(50) << step_name
+                    << (failed ? " Failed after   " : " Completed in ")
+                    << std::right << std::setw(7) << std::fixed
+                    << std::setprecision(4) << seconds << " s\n";
+        }
+    };
+
+    // Tiny formating function that transform integer like this 1534430 to this 1,534,430
+    template<typename Integer>
+    [[nodiscard]]
     std::string formatInteger(const Integer value) {
-
         std::string text = std::to_string(value);
         const std::size_t sign_offset = !text.empty() && text.front() == '-' ? 1 : 0;
 
