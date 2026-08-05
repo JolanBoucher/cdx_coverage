@@ -63,9 +63,11 @@ contig) or a user-selected sub-region:
   `deps/libvgio` git submodule; deserializes GAM files and exposes the VG
   Protobuf alignment types (`vg::Alignment`, `vg::Mapping`, `vg::Position`,
   `vg::Edit`) that `cdx_coverage` reads
-- **`cdx_lib`** — a sibling library providing the CDX format types and I/O.
-  `CMakeLists.txt` expects it at `../cdx_lib` relative to this repository
-  (i.e. checked out next to `cdx_coverage`, not inside it)
+- **`cdx_lib`** — a small companion library providing the CDX format types
+  and I/O, developed alongside `cdx_coverage`. It is fetched and built
+  automatically by `CMakeLists.txt` via CMake's `FetchContent` (tracking its
+  `main` branch) — no manual clone or sibling checkout needed; a working
+  internet connection at configure time is all that's required
 
 ### Runtime-only dependency (circular graphs)
 
@@ -94,8 +96,9 @@ If already cloned without `--recurse-submodules`:
 git submodule update --init --recursive
 ```
 
-`cdx_lib` is **not** a submodule of this repository: clone it separately as
-a sibling directory (`../cdx_lib` relative to `cdx_coverage`).
+`cdx_lib` is **not** a submodule of this repository either — it is fetched
+automatically by CMake itself the first time you configure the build (see
+[Building](#building) below), so no extra step is needed for it.
 
 ### macOS (Apple Silicon or Intel, via Homebrew)
 
@@ -153,6 +156,12 @@ curl -L -o include/CLI/CLI.hpp \
 cmake -B build -S .
 cmake --build build -j
 ```
+
+The first configure needs a working internet connection: CMake's
+`FetchContent` fetches `cdx_lib` (and, unless `-DCDX_BUILD_TESTS=OFF` is
+passed, GoogleTest) automatically at that point. Subsequent configures
+re-check `cdx_lib`'s `main` branch for updates unless
+`-DFETCHCONTENT_UPDATES_DISCONNECTED=ON` is set.
 
 The compiled binary is `build/cdx_coverage`. If a Python 3 interpreter was
 found during configuration, a private virtual environment for circular
@@ -267,6 +276,10 @@ python_script/       circular_plot.py — pycirclize rendering backend for
 cmake/                build-time helper scripts (Python env provisioning)
 deps/libvgio/         libvgio git submodule
 ```
+
+`cdx_lib` and (for `-DCDX_BUILD_TESTS=ON`, the default) GoogleTest are not
+vendored under `deps/` — both are fetched into the build directory
+(`build/_deps/`) by CMake's `FetchContent` at configure time.
 
 ## License
 

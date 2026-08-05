@@ -261,10 +261,32 @@ target_compile_definitions(cdx_coverage PRIVATE
         CDX_CIRCULAR_PLOT_SCRIPT_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/python_script"
 )
 
-add_subdirectory(
-        ../cdx_lib
-        cdx_lib_build
+# ---------------------------------------------------------------------------
+# cdx_lib (CDX format types and I/O)
+# ---------------------------------------------------------------------------
+# Fetched automatically via CMake FetchContent instead of requiring a manual
+# sibling checkout (previously: add_subdirectory(../cdx_lib), which meant
+# cdx_lib had to already be cloned next to this repository). It also isn't
+# vendored as a visible submodule under deps/ like libvgio: FetchContent
+# downloads the source straight into the build tree
+# (build/_deps/cdx_lib-src) and it is statically linked directly into the
+# final cdx_coverage executable, exactly as before - just without the
+# separate manual clone step.
+#
+# GIT_TAG is the "main" branch, not a pinned commit, by design: cdx_lib and
+# cdx_coverage are actively co-developed side by side, so every reconfigure
+# re-fetches and rebuilds against the latest main (CMake's default
+# FETCHCONTENT_UPDATES_DISCONNECTED=OFF checks for updates on each configure
+# for branch refs). Delete the build directory (or re-run cmake configure)
+# to pick up new cdx_lib commits immediately.
+include(FetchContent)
+
+FetchContent_Declare(
+        cdx_lib
+        GIT_REPOSITORY https://github.com/JolanBoucher/cdx_lib.git
+        GIT_TAG main
 )
+FetchContent_MakeAvailable(cdx_lib)
 
 target_link_libraries(cdx_coverage PRIVATE
         cdx_lib

@@ -17,8 +17,6 @@ jobs:
     runs-on: ${{ matrix.os }}
 
     steps:
-      # Checked out into its own subdirectory (not the workspace root) so
-      # that cdx_lib below can be checked out as a true sibling directory.
       - name: Checkout cdx_coverage
         uses: actions/checkout@v4
         with:
@@ -26,19 +24,11 @@ jobs:
           submodules: recursive
           fetch-depth: 0
 
-      # cdx_lib is not a Git submodule of this repo: CMakeLists.txt expects
-      # it checked out as a sibling directory, `../cdx_lib` relative to
-      # cdx_coverage (see README > Requirements > Build-time dependencies).
-      - name: Checkout cdx_lib (sibling checkout)
-        uses: actions/checkout@v4
-        with:
-          repository: JolanBoucher/cdx_lib
-          path: cdx_lib
-
+      # cdx_lib is neither a Git submodule nor a sibling checkout: CMake's
+      # FetchContent fetches and builds it automatically during the
+      # "Configure" step below (see CMakeLists.txt), same as GoogleTest.
       # Single source of truth for system packages, CLI11, GCC-11 (20.04
-      # only) and Abseil - see scripts/install_ubuntu20.sh. It also
-      # re-clones cdx_lib if missing, but that's a no-op here since it was
-      # already checked out above as a sibling directory.
+      # only) and Abseil - see scripts/install_ubuntu20.sh.
       - name: Bootstrap build dependencies (scripts/install_ubuntu20.sh)
         run: |
           # Sourced (not executed) so the CC/CXX it exports survive past

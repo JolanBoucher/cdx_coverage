@@ -14,9 +14,12 @@
 # Assumed layout when this script is run:
 #   <parent>/cdx_coverage   <- this repo, submodules NOT required to be
 #                              initialized yet (the script does it)
-#   <parent>/cdx_lib        <- sibling checkout, cloned by this script if
-#                              missing (required by cdx_coverage's
-#                              CMakeLists.txt: add_subdirectory(../cdx_lib))
+#
+# cdx_lib is neither a submodule nor a sibling checkout: CMake's
+# FetchContent fetches and builds it automatically the first time you run
+# `cmake -S . -B build` (see CMakeLists.txt), so this script doesn't need to
+# do anything for it - a working internet connection at configure time is
+# all that's required.
 #
 # Usage:
 #   cd cdx_coverage
@@ -26,21 +29,18 @@
 #   ./build/cdx_coverage --help
 #
 # Safe to re-run: every step is idempotent (apt install of already-installed
-# packages is a no-op, Abseil/CLI11/cdx_lib steps are skipped if already
-# present).
+# packages is a no-op, Abseil/CLI11 steps are skipped if already present).
 
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CDX_COVERAGE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
-PARENT_DIR="$(cd "${CDX_COVERAGE_DIR}/.." && pwd)"
-CDX_LIB_DIR="${PARENT_DIR}/cdx_lib"
 
 ABSEIL_TAG="20240722.0"   # Kept in sync with .github/workflows/ubuntu.yml -
                           # this is the version CI actually tests, not just
                           # the ">=20230802" floor CMakeLists.txt requires.
 
-echo "==> [1/6] Installing system packages (apt)"
+echo "==> [1/5] Installing system packages (apt)"
 sudo apt update
 sudo apt install -y \
     build-essential \
@@ -70,7 +70,7 @@ sudo apt install -y \
 UBUNTU_VERSION_ID="$(. /etc/os-release && echo "${VERSION_ID:-unknown}")"
 
 if [ "${UBUNTU_VERSION_ID}" = "20.04" ]; then
-    echo "==> [2/6] Installing GCC 11 (Ubuntu 20.04's default GCC 9.4 is too"
+    echo "==> [2/5] Installing GCC 11 (Ubuntu 20.04's default GCC 9.4 is too"
     echo "    old for a robust C++17 baseline)"
     sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
     sudo apt update
@@ -78,7 +78,7 @@ if [ "${UBUNTU_VERSION_ID}" = "20.04" ]; then
     export CC=gcc-11
     export CXX=g++-11
 else
-    echo "==> [2/6] Ubuntu ${UBUNTU_VERSION_ID}: default compiler is new"
+    echo "==> [2/5] Ubuntu ${UBUNTU_VERSION_ID}: default compiler is new"
     echo "    enough, skipping the GCC-11 PPA step"
     export CC="${CC:-gcc}"
     export CXX="${CXX:-g++}"
@@ -87,7 +87,7 @@ echo "    Using CC=$CC CXX=$CXX for the rest of this script."
 echo "    Export these yourself before running cmake by hand later:"
 echo "      export CC=$CC CXX=$CXX"
 
-echo "==> [3/6] Installing CLI11 (header-only)"
+echo "==> [3/5] Installing CLI11 (header-only)"
 cd "${CDX_COVERAGE_DIR}"
 if [ -f include/CLI/CLI.hpp ]; then
     echo "    include/CLI/CLI.hpp already present, skipping"
@@ -101,7 +101,7 @@ else
         https://github.com/CLIUtils/CLI11/releases/latest/download/CLI11.hpp
 fi
 
-echo "==> [4/6] Building and installing Abseil ${ABSEIL_TAG} from source"
+echo "==> [4/5] Building and installing Abseil ${ABSEIL_TAG} from source"
 echo "    (Ubuntu's packaged libabsl-dev predates the Logging library"
 echo "    symbols - absl::log_internal_message, absl::log_internal_check_op"
 echo "    - that CMakeLists.txt links against)"
@@ -122,17 +122,10 @@ else
     sudo ldconfig
 fi
 
-echo "==> [5/6] Initializing cdx_coverage Git submodules (deps/libvgio +"
+echo "==> [5/5] Initializing cdx_coverage Git submodules (deps/libvgio +"
 echo "    nested deps/libhandlegraph)"
 cd "${CDX_COVERAGE_DIR}"
 git submodule update --init --recursive
-
-echo "==> [6/6] Fetching cdx_lib sibling checkout"
-if [ -d "${CDX_LIB_DIR}" ]; then
-    echo "    ${CDX_LIB_DIR} already exists, leaving it as-is"
-else
-    git clone https://github.com/JolanBoucher/cdx_lib "${CDX_LIB_DIR}"
-fi
 
 cat <<EOF
 
