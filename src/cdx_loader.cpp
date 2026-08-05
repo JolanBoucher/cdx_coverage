@@ -39,14 +39,12 @@ namespace {
 
         // Populate element sequence lengths offset by 1 to reserve index 0
         for (const cdx::NodeRecord &record: records) {
-#ifndef NDEBUG
             if (record.idx >= node_count) {
                 throw std::runtime_error(
                     "Node record for node " + std::to_string(record.node_id) +
                     " has an out-of-bounds local index " + std::to_string(record.idx) + "."
                 );
             }
-#endif
 
             idx2bp[static_cast<std::size_t>(record.idx) + 1] = record.seq_len;
         }
@@ -78,14 +76,12 @@ namespace {
             return index;
         }
 
-        // --- Debug safeguard: Ensure input base pair coordinates are monotonically sorted ---
-#ifndef NDEBUG
+        // --- Safeguard: Ensure input base pair coordinates are monotonically sorted ---
         for (std::size_t idx = 1; idx < idx2bp.size(); ++idx) {
             if (idx2bp[idx] < idx2bp[idx - 1]) {
                 throw std::runtime_error("idx2bp must be sorted");
             }
         }
-#endif
 
         const cdx::PosBp component_length_bp = idx2bp.back();
         const std::size_t node_count = idx2bp.size() - 1;
@@ -297,11 +293,9 @@ namespace {
         std::vector nid2idx(component_size, cfg::NOT_IN_COMPO);
 
         for (const auto &record: records) {
-#ifndef NDEBUG
             if (record.node_id < nid_min || record.node_id > nid_max) {
                 throw std::runtime_error("NodeRecord node_id outside component range");
             }
-#endif
 
             const std::size_t node_offset = record.node_id - nid_min;
             nid2idx[node_offset] = record.idx;
@@ -338,11 +332,9 @@ namespace {
         const bool crosses_origin = query_start > query_end;
 
         for (const auto &record: records) {
-#ifndef NDEBUG
             if (record.node_id < nid_min || record.node_id > nid_max) {
                 throw std::runtime_error("NodeRecord node_id outside component range during coverage table build");
             }
-#endif
 
             const std::size_t node_offset = record.node_id - nid_min;
 
@@ -530,12 +522,10 @@ namespace {
             const auto component_offset = static_cast<cdx::FlatIdx>(component_offsets[component_id]);
 
             for (const auto &record: records) {
-                const std::size_t node_offset = record.node_id - graph_nid_min;
-#ifndef NDEBUG
                 if (record.node_id < graph_nid_min || record.node_id > graph_nid_max) {
                     throw std::runtime_error("Node ID outside graph bounds.");
                 }
-#endif
+                const std::size_t node_offset = record.node_id - graph_nid_min;
                 nid2flat_idx[node_offset] = component_offset + static_cast<cdx::FlatIdx>(record.idx);
             }
         }

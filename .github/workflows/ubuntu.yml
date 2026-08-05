@@ -35,66 +35,18 @@ jobs:
           repository: JolanBoucher/cdx_lib
           path: cdx_lib
 
-      - name: Install dependencies
+      # Single source of truth for system packages, CLI11, GCC-11 (20.04
+      # only) and Abseil - see scripts/install_ubuntu20.sh. It also
+      # re-clones cdx_lib if missing, but that's a no-op here since it was
+      # already checked out above as a sibling directory.
+      - name: Bootstrap build dependencies (scripts/install_ubuntu20.sh)
         run: |
-          sudo apt update
-          sudo apt install -y \
-            build-essential \
-            cmake \
-            git \
-            pkg-config \
-            protobuf-compiler \
-            libprotobuf-dev \
-            libhts-dev \
-            libomp-dev \
-            libcairo2-dev \
-            libjansson-dev \
-            zlib1g-dev
-
-      # CLI11 packaging varies by Ubuntu release; fall back to the
-      # single-header release if libcli11-dev isn't available (see README).
-      - name: Install CLI11
-        run: |
-          if sudo apt install -y libcli11-dev; then
-            echo "Installed libcli11-dev from apt"
-          else
-            echo "libcli11-dev not available, fetching single-header CLI11"
-            mkdir -p include/CLI
-            curl -L -o include/CLI/CLI.hpp \
-              https://github.com/CLIUtils/CLI11/releases/latest/download/CLI11.hpp
-          fi
+          # Sourced (not executed) so the CC/CXX it exports survive past
+          # this step, and forwarded into GITHUB_ENV for later steps.
+          source ./scripts/install_ubuntu20.sh
+          echo "CC=$CC" >> "$GITHUB_ENV"
+          echo "CXX=$CXX" >> "$GITHUB_ENV"
         working-directory: cdx_coverage
-
-      # Ubuntu 20.04's default GCC is 9.4; pull GCC 11 from the toolchain
-      # PPA for a more robust C++17 baseline on the oldest supported OS.
-      - name: Install GCC 11 (Ubuntu 20.04 only)
-        if: matrix.os == 'ubuntu-20.04'
-        run: |
-          sudo apt install -y software-properties-common
-          sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-          sudo apt update
-          sudo apt install -y gcc-11 g++-11
-          echo "CC=gcc-11" >> "$GITHUB_ENV"
-          echo "CXX=g++-11" >> "$GITHUB_ENV"
-
-      # Ubuntu's packaged libabsl-dev predates Abseil's Logging library
-      # (absl::log_internal_message / absl::log_internal_check_op, added in
-      # the 20230802 LTS release), which CMakeLists.txt links against. Build
-      # a recent Abseil from source and install it to /usr/local instead of
-      # relying on the (too old) apt package.
-      - name: Build and install Abseil
-        run: |
-          git clone --depth 1 --branch 20240722.0 \
-            https://github.com/abseil/abseil-cpp.git /tmp/abseil-cpp
-          cmake -S /tmp/abseil-cpp -B /tmp/abseil-cpp/build \
-            -DCMAKE_BUILD_TYPE=Release \
-            -DCMAKE_POSITION_INDEPENDENT_CODE=ON \
-            -DCMAKE_CXX_STANDARD=17 \
-            -DABSL_PROPAGATE_CXX_STD=ON \
-            -DABSL_BUILD_TESTING=OFF
-          cmake --build /tmp/abseil-cpp/build -j"$(nproc)"
-          sudo cmake --install /tmp/abseil-cpp/build
-          sudo ldconfig
 
       - name: Show toolchain versions
         run: |

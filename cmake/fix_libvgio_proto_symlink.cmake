@@ -4,7 +4,8 @@
 # integration:
 #   1) find_package(Protobuf CONFIG) + protobuf_generate() -> writes
 #      vg.pb.h FLAT at <libvgio_build_dir>/vg.pb.h, and libvgio's own
-#      "vg -> ." symlink makes "vg/vg.pb.h" resolve correctly.
+#      "vg -> ." symlink (its own "link_target" custom target) makes
+#      "vg/vg.pb.h" resolve correctly.
 #   2) fallback find_package(Protobuf) (legacy FindProtobuf.cmake module)
 #      + protobuf_generate_cpp() -> PRESERVES the "deps/" subpath, writing
 #      vg.pb.h at <libvgio_build_dir>/deps/vg.pb.h instead.
@@ -15,19 +16,33 @@
 # libvgio's flat "vg -> ." symlink does NOT cover "vg/vg.pb.h", and any
 # source doing #include "vg/vg.pb.h" fails to compile.
 #
-# This script runs after libvgio's protoc step, locates wherever vg.pb.h
-# actually landed, and (re)builds "<libvgio_build_dir>/vg/" as a small
-# directory of symlinks pointing at the real generated files - so the
-# include always resolves, regardless of which Protobuf CMake integration
-# the host machine happens to have.
+# IMPORTANT: this script deliberately does NOT touch libvgio's own "vg"
+# symlink/entry. That target ("link_target") is an `add_custom_target(...
+# ALL COMMAND ... create_symlink . vg)` with no declared OUTPUT, so Ninja/
+# Make re-runs it on *every* build, unconditionally recreating "vg" as a
+# plain symlink pointing at ".". An earlier version of this script replaced
+# "vg" with a real directory the first time it ran, which then made every
+# subsequent build's "create_symlink . vg" step fail outright (fatal on
+# macOS: "Operation not permitted" trying to unlink a non-empty directory;
+# merely fragile elsewhere). Fighting over the same path across builds is
+# not fixable while link_target keeps unconditionally recreating it - so
+# instead this script builds its OWN parallel "vg/vg.pb.h" under a
+# different directory (cdx_vg_include/vg/...), which the parent
+# CMakeLists.txt adds to the relevant targets' include paths. libvgio's
+# native "vg -> ." symlink is left completely alone, whether it's correct
+# (case 1, flat) or wrong (case 2, deps/) - it simply doesn't matter
+# anymore, because our own directory covers "vg/vg.pb.h" independently of
+# it.
 
 if(NOT DEFINED LIBVGIO_BINARY_DIR)
     message(FATAL_ERROR "LIBVGIO_BINARY_DIR must be defined")
 endif()
 
+set(_fixup_dir "${LIBVGIO_BINARY_DIR}/cdx_vg_include")
+
 file(GLOB_RECURSE _candidate_headers "${LIBVGIO_BINARY_DIR}/*vg.pb.h")
-# Exclude anything already sitting under the "vg/" fixup dir from a previous run.
-list(FILTER _candidate_headers EXCLUDE REGEX "/vg/vg\\.pb\\.h$")
+# Exclude anything already sitting under our own fixup dir from a previous run.
+list(FILTER _candidate_headers EXCLUDE REGEX "/cdx_vg_include/vg/vg\\.pb\\.h$")
 
 if(NOT _candidate_headers)
     message(FATAL_ERROR
@@ -38,22 +53,14 @@ endif()
 list(GET _candidate_headers 0 _hdr_path)
 string(REGEX REPLACE "\\.h$" ".cc" _src_path "${_hdr_path}")
 
-# libvgio's own link_target step may have already created "vg" as a symlink
-# pointing to "." (i.e. to LIBVGIO_BINARY_DIR itself, self-referentially).
-# file(REMOVE_RECURSE) follows symlinks-to-directories, so calling it on that
-# self-referential symlink recurses into itself forever and crashes CMake.
-# Only ever remove it as a plain (non-recursing) unlink when it's a symlink;
-# only recurse when it's a genuine directory.
-if(IS_SYMLINK "${LIBVGIO_BINARY_DIR}/vg")
-    file(REMOVE "${LIBVGIO_BINARY_DIR}/vg")
-elseif(IS_DIRECTORY "${LIBVGIO_BINARY_DIR}/vg")
-    file(REMOVE_RECURSE "${LIBVGIO_BINARY_DIR}/vg")
-endif()
-file(MAKE_DIRECTORY "${LIBVGIO_BINARY_DIR}/vg")
-file(CREATE_LINK "${_hdr_path}" "${LIBVGIO_BINARY_DIR}/vg/vg.pb.h" SYMBOLIC)
+# Our own directory - never touched by libvgio's own build rules, so it's
+# safe to remove/recreate on every run without racing anything.
+file(REMOVE_RECURSE "${_fixup_dir}")
+file(MAKE_DIRECTORY "${_fixup_dir}/vg")
+file(CREATE_LINK "${_hdr_path}" "${_fixup_dir}/vg/vg.pb.h" SYMBOLIC)
 
 if(EXISTS "${_src_path}")
-    file(CREATE_LINK "${_src_path}" "${LIBVGIO_BINARY_DIR}/vg/vg.pb.cc" SYMBOLIC)
+    file(CREATE_LINK "${_src_path}" "${_fixup_dir}/vg/vg.pb.cc" SYMBOLIC)
 endif()
 
-message(STATUS "libvgio proto fixup: vg/vg.pb.h -> ${_hdr_path}")
+message(STATUS "libvgio proto fixup: vg/vg.pb.h -> ${_hdr_path} (via ${_fixup_dir})")

@@ -145,13 +145,13 @@ namespace output {
      * @brief Computes the optimal grid layout (rows and columns) for a given number of global graph components.
      *
      * For component counts between 1 and 9, hand-tuned layouts are used for ideal visual
-     * aspect ratios. For 10 to 25 components, it dynamically calculates a balanced grid
+     * aspect ratios. For 10 to 30 components, it dynamically calculates a balanced grid
      * based on the square root of the count.
      *
-     * @param component_count The total number of graph components to arrange (must be between 1 and 25).
+     * @param component_count The total number of graph components to arrange (must be between 1 and 30).
      * @return GridLayout A structure containing the calculated row and column dimensions.
      *
-     * @throws std::invalid_argument If @p component_count is less than 1 or greater than 25.
+     * @throws std::invalid_argument If @p component_count is less than 1 or greater than 30.
      */
     [[nodiscard]]
     GridLayout chooseGlobalGraphGrid(

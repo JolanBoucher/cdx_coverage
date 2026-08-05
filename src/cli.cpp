@@ -231,8 +231,8 @@ CliArgs parse_args(const int argc, char **argv) {
         "-q,--query",
         query_raw,
         "Scope of the coverage calculation (0-based coordinates).\n"
-        "Formats: COMPONENT or COMPONENT:START-END (accepts name or ComponentID)\n"
-        "Examples: -q chr1, -q 0, -q chr1 1000-5000"
+        "Formats: COMPONENT or 'COMPONENT START:END' (accepts name or ComponentID)\n"
+        "Examples: -q chr1, -q 0, -q \"chr1 1000:5000\""
     );
 
     std::string comp_type_raw;
@@ -339,11 +339,22 @@ CliArgs parse_args(const int argc, char **argv) {
         "Hexadecimal color for coverage fill.\n"
         "Default: #93C5FD.");
 
-    // Parse raw CLI inputs; CLI11 automatically prints error messages and help if required
+    // Parse raw CLI inputs; CLI11 automatically prints error/help/version text
+    // via app.exit(). A zero exit code means --help/--version was requested,
+    // which is not an error and still terminates the process immediately (no
+    // caller ever needs to observe/test that path beyond its exit code). Any
+    // other exit code represents a genuine parse failure, which is thrown
+    // instead so it flows through the same std::exception handling as every
+    // other validation error below (and so parse_args stays testable without
+    // forking a subprocess).
     try {
         app.parse(argc, argv);
     } catch (const CLI::ParseError &e) {
-        std::exit(app.exit(e));
+        const int exit_code = app.exit(e);
+        if (exit_code == 0) {
+            std::exit(exit_code);
+        }
+        throw std::runtime_error("Argument parsing failed (see usage above).");
     }
 
     // ============================================================
@@ -360,8 +371,9 @@ CliArgs parse_args(const int argc, char **argv) {
 
     // Enforce mandatory GAM file presence if NOT running in inspection mode
     if (!args.inspectMode() && args.gam_file.empty()) {
-        std::cerr << "Error: GAM file argument is required unless running in inspect mode (-i/--inspect).\n";
-        std::exit(1);
+        throw std::runtime_error(
+            "GAM file argument is required unless running in inspect mode (-i/--inspect)."
+        );
     }
 
     // 2. Dynamic Thread Resolution based on Available Hardware
@@ -392,8 +404,7 @@ CliArgs parse_args(const int argc, char **argv) {
             args.decompression_threads = std::min(requested, machine_threads);
         }
     } catch (const std::exception &e) {
-        std::cerr << "Error parsing thread arguments: " << e.what() << "\n";
-        std::exit(1);
+        throw std::runtime_error(std::string("Error parsing thread arguments: ") + e.what());
     }
 
     // 3. Parse Custom Data Formats (Query, Component Type, Hex Colors)
@@ -401,8 +412,7 @@ CliArgs parse_args(const int argc, char **argv) {
         try {
             args.query = parse_query(query_raw);
         } catch (const std::exception &e) {
-            std::cerr << "Error parsing --query: " << e.what() << "\n";
-            std::exit(1);
+            throw std::runtime_error(std::string("Error parsing --query: ") + e.what());
         }
     }
 
@@ -410,8 +420,7 @@ CliArgs parse_args(const int argc, char **argv) {
         try {
             args.component_type = parse_component_type(comp_type_raw);
         } catch (const std::exception &e) {
-            std::cerr << "Error parsing --component-type: " << e.what() << "\n";
-            std::exit(1);
+            throw std::runtime_error(std::string("Error parsing --component-type: ") + e.what());
         }
     }
 
@@ -423,8 +432,7 @@ CliArgs parse_args(const int argc, char **argv) {
         try {
             args.line_color = parse_hex_color(line_color_raw);
         } catch (const std::exception &e) {
-            std::cerr << "Error parsing --color-line: " << e.what() << "\n";
-            std::exit(1);
+            throw std::runtime_error(std::string("Error parsing --color-line: ") + e.what());
         }
     }
 
@@ -432,15 +440,13 @@ CliArgs parse_args(const int argc, char **argv) {
         try {
             args.fill_color = parse_hex_color(fill_color_raw);
         } catch (const std::exception &e) {
-            std::cerr << "Error parsing --color-filling: " << e.what() << "\n";
-            std::exit(1);
+            throw std::runtime_error(std::string("Error parsing --color-filling: ") + e.what());
         }
     }
 
     // Ensure at least one output mode remains active
     if (args.no_graph && args.no_stats && args.no_table) {
-        std::cerr << "Error: All outputs are disabled (--no-graph, --no-stats, --no-table).\n";
-        std::exit(1);
+        throw std::runtime_error("All outputs are disabled (--no-graph, --no-stats, --no-table).");
     }
 
     // 4. Determine Output Figure Dimensions
@@ -451,8 +457,7 @@ CliArgs parse_args(const int argc, char **argv) {
             args.figure_width = args.custom_figure_size->first;
             args.figure_height = args.custom_figure_size->second;
         } catch (const std::exception &e) {
-            std::cerr << "Error parsing --fig-size: " << e.what() << "\n";
-            std::exit(1);
+            throw std::runtime_error(std::string("Error parsing --fig-size: ") + e.what());
         }
     } else {
         // Compute default canvas aspect ratios based on query presence and graph topology

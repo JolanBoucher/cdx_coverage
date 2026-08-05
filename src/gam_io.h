@@ -61,7 +61,8 @@ struct GamMappingStats {
  * @param worker_threads Number of active worker threads allocated for parallel alignment parsing and counting.
  * @return GamMappingStats Aggregated mapping statistics (total, mapped, unmapped, and query-mapped counts).
  *
- * @throws std::invalid_argument If @p batch_size is zero, @p decompression_threads is non-positive, or @p target is empty.
+ * @throws std::invalid_argument If @p batch_size is zero, @p decompression_threads is non-positive,
+ *         @p worker_threads is non-positive, or @p target is empty.
  * @throws std::runtime_error If the GAM file fails to open or encounters stream reading/parsing errors.
  * @throws std::logic_error If internal statistical invariants are violated.
  */

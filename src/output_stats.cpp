@@ -55,11 +55,9 @@ namespace {
         void merge(const CoverageAccumulator &other) {
             if (other.region_length == 0) return;
 
-#ifndef NDEBUG
             if (other.sum > std::numeric_limits<std::uint64_t>::max() - sum) {
                 throw std::overflow_error("Coverage sum exceeds uint64_t capacity.");
             }
-#endif
 
             // filling the member with the struct
             region_length += other.region_length;
@@ -422,11 +420,9 @@ namespace {
             ++acc.histogram[static_cast<std::size_t>(value)];
 
             const auto unsigned_value = static_cast<std::uint64_t>(value);
-#ifndef NDEBUG
             if (unsigned_value > std::numeric_limits<std::uint64_t>::max() - acc.sum) {
                 throw std::overflow_error("Coverage sum exceeds uint64_t capacity.");
             }
-#endif
             acc.sum += unsigned_value;
 
             // Accumulate the second moment for later variance calculation.

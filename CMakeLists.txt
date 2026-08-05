@@ -15,6 +15,17 @@ project(
 # ---------------------------------------------------------------------------
 # Project configuration
 # ---------------------------------------------------------------------------
+# Default to a Release build (optimized) whenever the build type isn't
+# explicitly requested. Without this, a plain `cmake -S . -B build` (no
+# -DCMAKE_BUILD_TYPE) leaves CMAKE_BUILD_TYPE empty, i.e. no optimization
+# flags at all. This only affects single-config generators (Makefiles,
+# Ninja); multi-config generators (Xcode, Visual Studio) ignore it and pick
+# the config at build time instead - and any explicit -DCMAKE_BUILD_TYPE=...
+# (e.g. CLion's own per-profile setting, or CI's Release flag) still wins.
+if(NOT CMAKE_BUILD_TYPE AND NOT CMAKE_CONFIGURATION_TYPES)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+endif()
+
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_CXX_EXTENSIONS OFF)
@@ -47,6 +58,41 @@ if(APPLE)
 endif()
 
 find_package(OpenMP REQUIRED COMPONENTS CXX)
+
+# ---------------------------------------------------------------------------
+# CLI11 (single-header command-line parser)
+# ---------------------------------------------------------------------------
+# Not vendored in this repo. Resolved portably so both the main executable
+# and the unit tests (test/CMakeLists.txt) find the same header regardless
+# of how it was installed on the host: a CLI11Config.cmake package (Homebrew,
+# apt's libcli11-dev, vcpkg, conan, ...), or a bare single-header drop
+# reachable via one of the hint paths below or CMAKE_PREFIX_PATH/CPATH.
+find_package(CLI11 CONFIG QUIET)
+
+if(NOT TARGET CLI11::CLI11)
+    find_path(CLI11_INCLUDE_DIR
+            NAMES CLI/CLI.hpp
+            HINTS
+            "/opt/homebrew/opt/cli11/include"
+            "/usr/local/opt/cli11/include"
+            "${CMAKE_CURRENT_SOURCE_DIR}/include"
+    )
+
+    if(NOT CLI11_INCLUDE_DIR)
+        message(FATAL_ERROR
+                "CLI11 (CLI/CLI.hpp) was not found. Install it, e.g.:\n"
+                "  macOS:  brew install cli11\n"
+                "  Ubuntu: apt-get install libcli11-dev\n"
+                "  (or drop the single-header release as ./include/CLI/CLI.hpp)\n"
+                "Then reconfigure."
+        )
+    endif()
+
+    message(STATUS "Using CLI11 headers from: ${CLI11_INCLUDE_DIR}")
+
+    add_library(CLI11::CLI11 INTERFACE IMPORTED)
+    target_include_directories(CLI11::CLI11 INTERFACE "${CLI11_INCLUDE_DIR}")
+endif()
 
 # libvgio requires HTSlib 1.10 or newer.
 pkg_check_modules(
@@ -148,9 +194,20 @@ add_custom_command(
 )
 add_custom_target(cdx_fix_libvgio_proto_include ALL
         DEPENDS "${LIBVGIO_BINARY_DIR}/.vg_proto_fixup_stamp")
-# Must run after libvgio's own "vg -> ." symlink target so ours wins in all cases.
-add_dependencies(cdx_fix_libvgio_proto_include run_protoc link_target)
-add_dependencies(${CDX_VGIO_TARGET} cdx_fix_libvgio_proto_include)
+add_dependencies(cdx_fix_libvgio_proto_include run_protoc)
+
+# Make "vg/vg.pb.h" resolve for every target that compiles libvgio sources
+# (both the shared and static variants build their own copies of
+# alignment_emitter.cpp etc.) as well as anything linking against libvgio
+# downstream (e.g. cdx_coverage itself, via the PUBLIC/BUILD_INTERFACE
+# propagation below).
+foreach(_vgio_target vgio vgio_static)
+    if(TARGET ${_vgio_target})
+        add_dependencies(${_vgio_target} cdx_fix_libvgio_proto_include)
+        target_include_directories(${_vgio_target} PUBLIC
+                $<BUILD_INTERFACE:${LIBVGIO_BINARY_DIR}/cdx_vg_include>)
+    endif()
+endforeach()
 
 # Link Abseil components required by Protobuf into vgio
 target_link_libraries(${CDX_VGIO_TARGET} PRIVATE
@@ -185,6 +242,8 @@ add_executable(cdx_coverage
         src/output_plot.h
         src/python_circular_plot.cpp
         src/cairo_plot.cpp
+        src/query_plot_slice.h
+        src/query_plot_slice.cpp
 )
 
 target_compile_features(cdx_coverage PRIVATE cxx_std_17)
@@ -217,6 +276,7 @@ target_link_libraries(cdx_coverage PRIVATE
         absl::status
         absl::raw_logging_internal
         PkgConfig::CAIRO
+        CLI11::CLI11
 )
 
 if(CMAKE_CXX_COMPILER_ID MATCHES "Clang|GNU")

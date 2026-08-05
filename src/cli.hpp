@@ -92,6 +92,14 @@ struct CliArgs {
  * @param argc Count of command-line arguments.
  * @param argv Array of command-line argument strings.
  * @return CliArgs Populated and validated argument structure ready for program execution.
+ *
+ * @throws std::runtime_error If argument parsing or post-parse validation fails for any reason
+ *         (malformed/missing/out-of-range option values, missing required GAM file outside
+ *         inspect mode, all outputs disabled, etc.). The exception message is ready to display
+ *         to the user as-is.
+ *
+ * @note `--help`/`--version` are handled by calling std::exit(0) directly after printing their
+ *       text (CLI11's own behavior) - they are not reported as errors and do not throw.
  */
 CliArgs parse_args(int argc, char** argv);
 

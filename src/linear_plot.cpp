@@ -24,7 +24,7 @@
 namespace output {
     // Computes the grid layout for a global graph components.
     GridLayout chooseGlobalGraphGrid(const std::size_t component_count) {
-        // Validate that component count falls within the supported range [1, 25]
+        // Validate that component count falls within the supported range [1, 30]
         if (component_count < 1 || component_count > 30) {
             throw std::invalid_argument("The global graph supports between 1 and 30 components.");
         }

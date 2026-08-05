@@ -42,6 +42,7 @@
 #include <vector>
 
 #include "output_plot.h"
+#include "query_plot_slice.h"
 
 namespace {
     constexpr std::size_t GAM_BATCH_SIZE = 2048;
@@ -442,29 +443,16 @@ namespace {
                  * pas le vecteur). Pour que l'axe X du graphe corresponde
                  * exactement à la plage demandée (ex. -q "chr1 0:100" -> axe 0-100
                  * et non compo_start-compo_end), on découpe ici un sous-vecteur
-                 * borné à [query_start, query_end].
+                 * borné à [query_start, query_end] (voir query_plot_slice.h/.cpp).
                  */
-                const auto [query_start_bp, query_end_bp] = data.query_range_bp;
-
-                if (query_start_bp > query_end_bp) {
-                    throw std::invalid_argument(
-                        "A linear graph cannot represent an origin-crossing query."
-                    );
-                }
-                if (query_end_bp >= bp_coverage.size()) {
-                    throw std::out_of_range("Query range exceeds component coverage bounds.");
-                }
-
-                const std::vector<cdx::Coverage> plot_coverage(
-                    bp_coverage.begin() + static_cast<std::ptrdiff_t>(query_start_bp),
-                    bp_coverage.begin() + static_cast<std::ptrdiff_t>(query_end_bp) + 1
-                );
+                const std::vector<cdx::Coverage> plot_coverage =
+                        output::sliceLinearQueryCoverage(bp_coverage, data.query_range_bp);
 
                 output::writeLinearPlotQuery(
                     output_directory /cfg::NAME_GRAPH_FILE,
                     plot_coverage,
                     data.component.compo_name,
-                    query_start_bp,
+                    data.query_range_bp.first,
                     plot_config
                 );
             }

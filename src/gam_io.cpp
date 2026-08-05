@@ -36,6 +36,9 @@ GamMappingStats process_gam(
     if (decompression_threads <= 0) {
         throw std::invalid_argument("decompression_threads must be strictly greater than zero.");
     }
+    if (worker_threads <= 0) {
+        throw std::invalid_argument("worker_threads must be strictly greater than zero.");
+    }
     if (target.empty()) {
         throw std::invalid_argument("Target coverage vector must not be empty.");
     }
