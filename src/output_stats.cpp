@@ -553,6 +553,30 @@ namespace output {
             }
         }
 
+        // Validate basic accounting relationships between mapping categories
+        // (same checks as writeStatsReportQuery - kept in sync so both report
+        // writers reject the same malformed GamMappingStats).
+        if (mapping_stats.mapped > mapping_stats.total) {
+            throw std::invalid_argument("Mapped reads cannot exceed total reads.");
+        }
+        if (mapping_stats.unmapped > mapping_stats.total) {
+            throw std::invalid_argument("Unmapped reads cannot exceed total reads.");
+        }
+        if (mapping_stats.mapped_to_query > mapping_stats.mapped) {
+            throw std::invalid_argument("Reads mapped to query cannot exceed mapped reads.");
+        }
+        if (mapping_stats.mapped + mapping_stats.unmapped != mapping_stats.total) {
+            throw std::invalid_argument("Mapped and unmapped reads must sum to total reads.");
+        }
+
+        const double pct_mapped = mapping_stats.total
+                ? 100.0 * static_cast<double>(mapping_stats.mapped) / static_cast<double>(mapping_stats.total)
+                : 0.0;
+
+        const double pct_unmapped = mapping_stats.total
+                ? 100.0 * static_cast<double>(mapping_stats.unmapped) / static_cast<double>(mapping_stats.total)
+                : 0.0;
+
         std::ofstream report(output_path);
         if (!report) {
             throw std::runtime_error("Unable to open report file: " + output_path.string());
@@ -566,9 +590,14 @@ namespace output {
         report << "[ Mapping Statistics ]\n";
         report << std::string(70, '-') << '\n';
         report << std::left << std::setw(30) << "Total reads" << " : " << formatInteger(mapping_stats.total) << '\n';
-        report << std::left << std::setw(30) << "Mapped reads" << " : " << formatInteger(mapping_stats.mapped) << '\n';
-        report << std::left << std::setw(30) << "Reads mapped to query" << " : " << formatInteger(
-            mapping_stats.mapped_to_query) << "\n\n";
+        report << std::left << std::setw(30) << "Mapped reads" << " : " << formatInteger(mapping_stats.mapped)
+                << " (" << std::fixed << std::setprecision(2) << pct_mapped << "%)\n";
+        // "Reads mapped to query" / percentages are omitted here (unlike
+        // writeStatsReportQuery): in global mode the query always spans the
+        // whole genome, so mapped_to_query == mapped and those lines would
+        // just repeat "Mapped reads" with no new information.
+        report << std::left << std::setw(30) << "Unmapped reads" << " : " << formatInteger(mapping_stats.unmapped)
+                << " (" << pct_unmapped << "%)\n\n";
 
         const std::size_t component_count = component_offsets.size() - 1;
 
