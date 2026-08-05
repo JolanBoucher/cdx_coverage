@@ -175,7 +175,12 @@ cmake --build "${BUILD_DIR}" -j"$(nproc)"
 
 if [ "${RUN_TESTS}" -eq 1 ]; then
     echo "==> Running test suite (ctest)"
-    ctest --test-dir "${BUILD_DIR}" --output-on-failure
+    # `ctest --test-dir` needs CMake 3.20+; Ubuntu 20.04's apt cmake is
+    # 3.16.3, where that flag is silently ignored (ctest then looks for
+    # CTestTestfile.cmake in the current directory instead of in
+    # ${BUILD_DIR}, finds none, and reports "No tests were found!!!" without
+    # error). `cd` into the build dir instead - works on every CMake version.
+    (cd "${BUILD_DIR}" && ctest --output-on-failure)
 fi
 
 cat <<EOF
