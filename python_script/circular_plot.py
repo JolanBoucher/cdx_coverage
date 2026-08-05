@@ -65,6 +65,11 @@ Package (one component or one query, already fully processed):
 --------------------------------------------------------------------------
 """
 
+# Makes PEP 604 "X | Y" annotations (e.g. `str | None` below) work on Python
+# < 3.10, which is what Ubuntu 20.04's system python3 (3.8) ships. Must come
+# before any other import.
+from __future__ import annotations
+
 import os
 import struct
 import sys
