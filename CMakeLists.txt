@@ -128,6 +128,30 @@ endif()
 
 message(STATUS "Using libvgio target: ${CDX_VGIO_TARGET}")
 
+# ---------------------------------------------------------------------------
+# Portability fix: make sure "vg/vg.pb.h" resolves no matter which Protobuf
+# CMake integration the host machine's libvgio build picked (see
+# cmake/fix_libvgio_proto_symlink.cmake for the full explanation). This is
+# self-healing on every machine/OS - no manual submodule patching needed.
+# ---------------------------------------------------------------------------
+set(LIBVGIO_BINARY_DIR "${CMAKE_CURRENT_BINARY_DIR}/deps/libvgio")
+
+add_custom_command(
+        OUTPUT "${LIBVGIO_BINARY_DIR}/.vg_proto_fixup_stamp"
+        COMMAND "${CMAKE_COMMAND}"
+                -DLIBVGIO_BINARY_DIR=${LIBVGIO_BINARY_DIR}
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/cmake/fix_libvgio_proto_symlink.cmake"
+        COMMAND "${CMAKE_COMMAND}" -E touch "${LIBVGIO_BINARY_DIR}/.vg_proto_fixup_stamp"
+        DEPENDS run_protoc
+        COMMENT "Ensuring vg/vg.pb.h is reachable regardless of the host's Protobuf CMake integration"
+        VERBATIM
+)
+add_custom_target(cdx_fix_libvgio_proto_include ALL
+        DEPENDS "${LIBVGIO_BINARY_DIR}/.vg_proto_fixup_stamp")
+# Must run after libvgio's own "vg -> ." symlink target so ours wins in all cases.
+add_dependencies(cdx_fix_libvgio_proto_include run_protoc link_target)
+add_dependencies(${CDX_VGIO_TARGET} cdx_fix_libvgio_proto_include)
+
 # Link Abseil components required by Protobuf into vgio
 target_link_libraries(${CDX_VGIO_TARGET} PRIVATE
         absl::log_internal_message
@@ -261,3 +285,15 @@ install(FILES python_script/circular_plot.py DESTINATION bin)
 # successfully (OPTIONAL: silently skipped if provisioning failed/was
 # skipped, e.g. no network access during the build).
 install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/pyenv" DESTINATION bin OPTIONAL)
+
+# ---------------------------------------------------------------------------
+# Unit tests
+# ---------------------------------------------------------------------------
+# CDX_BUILD_TESTS lets the tests (and their GoogleTest download/build) be
+# skipped entirely, e.g. for a minimal/offline build of cdx_coverage itself.
+option(CDX_BUILD_TESTS "Build unit tests (requires network access to fetch GoogleTest on first configure)" ON)
+
+if(CDX_BUILD_TESTS)
+    enable_testing()
+    add_subdirectory(test)
+endif()
