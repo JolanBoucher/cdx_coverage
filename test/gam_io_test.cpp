@@ -153,7 +153,7 @@ namespace {
     // (NOT_IN_QUERY / NOT_IN_COMPO) are left completely untouched, since
     // valid_nodes[] is false for them and the write is skipped entirely.
     TEST(GamIoFileHandlingTest, EmptyGamFileYieldsZeroStatsAndResetsValidSlotsOnly) {
-        const GamFileFixture fixture({});
+        const GamFileFixture fixture(std::vector<AlignmentSpec>{});
         std::vector<cdx::Coverage> target{0, cfg::NOT_IN_QUERY, 5, cfg::NOT_IN_COMPO};
 
         const GamMappingStats stats = process_gam(fixture.path().string(), target, 100, 100, 1, 1);
@@ -184,7 +184,7 @@ namespace {
     // A read whose only mapping has a non-positive node_id is never marked
     // mapped at all (the `continue` happens before read_is_mapped is set).
     TEST(GamIoMappingFilterTest, NonPositiveNodeIdCountsAsUnmapped) {
-        const GamFileFixture fixture({{0}});
+        const GamFileFixture fixture(std::vector<AlignmentSpec>{{0}});
         std::vector<cdx::Coverage> target = baseTarget();
 
         const GamMappingStats stats = process_gam(fixture.path().string(), target, kNidMin, 100, 1, 1);
@@ -197,7 +197,7 @@ namespace {
     }
 
     TEST(GamIoMappingFilterTest, NegativeNodeIdCountsAsUnmapped) {
-        const GamFileFixture fixture({{-5}});
+        const GamFileFixture fixture(std::vector<AlignmentSpec>{{-5}});
         std::vector<cdx::Coverage> target = baseTarget();
 
         const GamMappingStats stats = process_gam(fixture.path().string(), target, kNidMin, 100, 1, 1);
@@ -209,7 +209,7 @@ namespace {
     // An alignment with an entirely empty Path (no mappings at all) - the
     // most common real-world representation of an unmapped read.
     TEST(GamIoMappingFilterTest, EmptyPathCountsAsUnmapped) {
-        const GamFileFixture fixture({{}});
+        const GamFileFixture fixture(std::vector<AlignmentSpec>{{}});
         std::vector<cdx::Coverage> target = baseTarget();
 
         const GamMappingStats stats = process_gam(fixture.path().string(), target, kNidMin, 100, 1, 1);
@@ -224,7 +224,7 @@ namespace {
     // flag is set before the range check), but must not touch coverage or
     // count toward mapped_to_query.
     TEST(GamIoMappingFilterTest, NodeIdBelowNidMinCountsMappedButNotQuery) {
-        const GamFileFixture fixture({{kNidMin - 1}}); // node 99, upstream of the local range
+        const GamFileFixture fixture(std::vector<AlignmentSpec>{{kNidMin - 1}}); // node 99, upstream of the local range
         std::vector<cdx::Coverage> target = baseTarget();
 
         const GamMappingStats stats = process_gam(fixture.path().string(), target, kNidMin, 100, 1, 1);
@@ -238,7 +238,7 @@ namespace {
     // A positive node_id at/beyond nid_min + coverage_size is downstream of
     // the local range: same "mapped but not query" outcome.
     TEST(GamIoMappingFilterTest, NodeIdBeyondCoverageSizeCountsMappedButNotQuery) {
-        const GamFileFixture fixture({{kNidMin + 5}}); // offset 5, target has only offsets 0..4
+        const GamFileFixture fixture(std::vector<AlignmentSpec>{{kNidMin + 5}}); // offset 5, target has only offsets 0..4
         std::vector<cdx::Coverage> target = baseTarget();
 
         const GamMappingStats stats = process_gam(fixture.path().string(), target, kNidMin, 100, 1, 1);
@@ -251,7 +251,7 @@ namespace {
     // A node inside the local range but excluded from the active query
     // (NOT_IN_QUERY sentinel, offset 2 / node 102): mapped, but not to query.
     TEST(GamIoMappingFilterTest, NodeOutsideActiveQueryCountsMappedButNotQuery) {
-        const GamFileFixture fixture({{kNidMin + 2}});
+        const GamFileFixture fixture(std::vector<AlignmentSpec>{{kNidMin + 2}});
         std::vector<cdx::Coverage> target = baseTarget();
 
         const GamMappingStats stats = process_gam(fixture.path().string(), target, kNidMin, 100, 1, 1);
@@ -263,7 +263,7 @@ namespace {
 
     // A node inside the active query is the only case that increments coverage.
     TEST(GamIoMappingFilterTest, NodeInsideActiveQueryIncrementsCoverage) {
-        const GamFileFixture fixture({{kNidMin + 1}}); // offset 1, active
+        const GamFileFixture fixture(std::vector<AlignmentSpec>{{kNidMin + 1}}); // offset 1, active
         std::vector<cdx::Coverage> target = baseTarget();
 
         const GamMappingStats stats = process_gam(fixture.path().string(), target, kNidMin, 100, 1, 1);
@@ -280,7 +280,7 @@ namespace {
     // Every mapping in a single alignment's path contributes its own
     // coverage increment, but the read is only counted once in the stats.
     TEST(GamIoMappingFilterTest, MultipleMappingsEachIncrementCoverageOnceReadCountedOnce) {
-        const GamFileFixture fixture({{kNidMin + 0, kNidMin + 1, kNidMin + 3, kNidMin + 4}});
+        const GamFileFixture fixture(std::vector<AlignmentSpec>{{kNidMin + 0, kNidMin + 1, kNidMin + 3, kNidMin + 4}});
         std::vector<cdx::Coverage> target = baseTarget();
 
         const GamMappingStats stats = process_gam(fixture.path().string(), target, kNidMin, 100, 1, 1);
@@ -294,7 +294,7 @@ namespace {
     // A path that revisits the same node twice (e.g. a loop) accumulates
     // coverage twice from a single read.
     TEST(GamIoMappingFilterTest, RevisitingSameNodeAccumulatesCoverageTwice) {
-        const GamFileFixture fixture({{kNidMin + 0, kNidMin + 1, kNidMin + 0}});
+        const GamFileFixture fixture(std::vector<AlignmentSpec>{{kNidMin + 0, kNidMin + 1, kNidMin + 0}});
         std::vector<cdx::Coverage> target = baseTarget();
 
         process_gam(fixture.path().string(), target, kNidMin, 100, 1, 1);
@@ -309,7 +309,7 @@ namespace {
 // =============================================================================
 namespace {
     TEST(GamIoStatsBookkeepingTest, MixedBatchProducesExactCounts) {
-        const GamFileFixture fixture({
+        const GamFileFixture fixture(std::vector<AlignmentSpec>{
             {}, // unmapped (empty path)
             {0}, // unmapped (non-positive node_id)
             {kNidMin - 1}, // mapped, not query (upstream)
