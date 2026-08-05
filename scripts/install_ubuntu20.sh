@@ -40,9 +40,19 @@ ABSEIL_TAG="20240722.0"   # Kept in sync with .github/workflows/ubuntu.yml -
                           # this is the version CI actually tests, not just
                           # the ">=20230802" floor CMakeLists.txt requires.
 
+# Root containers (common for Docker-based Ubuntu images/CI) typically don't
+# have `sudo` installed at all - it would be a no-op anyway since root
+# already has every permission `sudo` would grant. Detect that up front
+# instead of hardcoding `sudo` in every privileged command below.
+if [ "$(id -u)" -eq 0 ]; then
+    SUDO=""
+else
+    SUDO="sudo"
+fi
+
 echo "==> [1/5] Installing system packages (apt)"
-sudo apt update
-sudo apt install -y \
+$SUDO apt update
+$SUDO apt install -y \
     build-essential \
     cmake \
     git \
@@ -72,9 +82,9 @@ UBUNTU_VERSION_ID="$(. /etc/os-release && echo "${VERSION_ID:-unknown}")"
 if [ "${UBUNTU_VERSION_ID}" = "20.04" ]; then
     echo "==> [2/5] Installing GCC 11 (Ubuntu 20.04's default GCC 9.4 is too"
     echo "    old for a robust C++17 baseline)"
-    sudo add-apt-repository -y ppa:ubuntu-toolchain-r/test
-    sudo apt update
-    sudo apt install -y gcc-11 g++-11
+    $SUDO add-apt-repository -y ppa:ubuntu-toolchain-r/test
+    $SUDO apt update
+    $SUDO apt install -y gcc-11 g++-11
     export CC=gcc-11
     export CXX=g++-11
 else
@@ -91,7 +101,7 @@ echo "==> [3/5] Installing CLI11 (header-only)"
 cd "${CDX_COVERAGE_DIR}"
 if [ -f include/CLI/CLI.hpp ]; then
     echo "    include/CLI/CLI.hpp already present, skipping"
-elif sudo apt install -y libcli11-dev 2>/dev/null; then
+elif $SUDO apt install -y libcli11-dev 2>/dev/null; then
     echo "    Installed libcli11-dev from apt"
 else
     echo "    libcli11-dev not available on this Ubuntu release, fetching"
@@ -118,8 +128,8 @@ else
         -DABSL_PROPAGATE_CXX_STD=ON \
         -DABSL_BUILD_TESTING=OFF
     cmake --build "${ABSEIL_SRC_DIR}/build" -j"$(nproc)"
-    sudo cmake --install "${ABSEIL_SRC_DIR}/build"
-    sudo ldconfig
+    $SUDO cmake --install "${ABSEIL_SRC_DIR}/build"
+    $SUDO ldconfig
 fi
 
 echo "==> [5/5] Initializing cdx_coverage Git submodules (deps/libvgio +"
