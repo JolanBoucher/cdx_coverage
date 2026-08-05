@@ -309,9 +309,23 @@ gtest_discover_tests(main_e2e_test)
 # either is missing, every test in the file self-skips rather than erroring
 # (see _DEPENDENCIES_AVAILABLE in circular_plot_py_test.py).
 if(Python3_FOUND)
+    # numpy/matplotlib/pycirclize are auto-provisioned into a private venv at
+    # <top build dir>/pyenv by cmake/setup_circular_env.sh, run as a
+    # POST_BUILD step on the cdx_coverage target (see top-level
+    # CMakeLists.txt). That venv - not the bare system interpreter found here
+    # at configure time - is where those packages actually live, so the test
+    # must run under it or it fails with "ModuleNotFoundError: No module
+    # named 'numpy'" on any machine whose system Python doesn't happen to
+    # have them (e.g. CI runners).
+    #
+    # The venv is only created at BUILD time, not at this configure step, so
+    # its existence can't be checked here - the choice between it and the
+    # system interpreter has to happen at *test run* time instead (hence the
+    # shell conditional below, evaluated by ctest, not by CMake).
+    set(CDX_BUNDLED_PYENV_PYTHON "${CMAKE_BINARY_DIR}/pyenv/bin/python3")
     add_test(
             NAME circular_plot_py_test
-            COMMAND ${Python3_EXECUTABLE} -m unittest circular_plot_py_test -v
+            COMMAND bash -c "[ -x '${CDX_BUNDLED_PYENV_PYTHON}' ] && exec '${CDX_BUNDLED_PYENV_PYTHON}' -m unittest circular_plot_py_test -v || exec '${Python3_EXECUTABLE}' -m unittest circular_plot_py_test -v"
             WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
     )
 endif()
