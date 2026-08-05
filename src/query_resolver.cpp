@@ -112,7 +112,22 @@ std::vector<std::string> ComponentResolver::get_suggestions(
 ResolvedComponent ComponentResolver::resolve(const std::string& query) const {
     // Rule 1: Purely numeric input is interpreted as a component ID.
     if (is_unsigned_integer(query)) {
-        std::size_t cid = std::stoull(query);
+        std::size_t cid;
+        try {
+            cid = std::stoull(query);
+        } catch (const std::out_of_range&) {
+            // is_unsigned_integer() only guarantees "all digits", not that
+            // the value fits in std::size_t; a query with an excessive
+            // digit count (e.g. copy-paste error) must still surface as
+            // the documented std::runtime_error, not leak std::stoull's
+            // own exception type.
+            std::ostringstream oss;
+            oss << "Error: Component ID '" << query << "' is too large to be a valid component ID "
+                << "(total components: " << cid_to_name_.size() << ").\n";
+            oss << "Use --inspect to list available components.";
+            throw std::runtime_error(oss.str());
+        }
+
         if (cid < cid_to_name_.size() && !cid_to_name_[cid].empty()) {
             return ResolvedComponent{cid, cid_to_name_[cid]};
         }

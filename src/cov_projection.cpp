@@ -38,18 +38,20 @@ std::vector<cdx::Coverage> projectCov2IdxQuery(
     for (std::size_t nid_offset = 0; nid_offset < cov_table.size(); ++nid_offset) {
         const cdx::Idx local_idx = nid2idx[nid_offset];
 
-        // Filter out nodes not included in query/component space
-        // 3. Fix: Use correct index sentinel (cfg::INVALID_IDX) rather than coverage sentinel
-        if (local_idx == cfg::NOT_IN_QUERY) {
+        // Filter out nodes not included in query/component space. Both
+        // sentinels are checked explicitly (rather than relying on
+        // NOT_IN_COMPO incidentally overflowing the bounds check below)
+        // so the skip condition documents its own intent.
+        if (local_idx == cfg::NOT_IN_QUERY || local_idx == cfg::NOT_IN_COMPO) {
             continue;
         }
 
-#ifndef NDEBUG
-        // Sanity check: Ensure local index does not write outside component target vector
+        // Always validated (not just in debug builds): an out-of-range
+        // local_idx here indicates malformed input data, not an internal
+        // invariant violation, and callers rely on this being caught.
         if (static_cast<std::size_t>(local_idx) >= component_size) {
             throw std::out_of_range("Local index exceeds component size bounds.");
         }
-#endif
 
         // Copy coverage value into the local topological slot
         const cdx::Coverage coverage = cov_table[nid_offset];
@@ -93,12 +95,11 @@ std::vector<cdx::Coverage> expandPosCovQuery(
         const cdx::PosBp start_bp = idx2bp[local_idx];
         const cdx::PosBp end_bp = idx2bp[local_idx + 1];
 
-#ifndef NDEBUG
-        // Assert prefix sum monotonicity
+        // Always validated: a non-monotonic idx2bp reflects malformed
+        // input data, not just an internal debug invariant.
         if (start_bp > end_bp) {
             throw std::runtime_error("Non-monotonic base-pair coordinates detected in idx2bp.");
         }
-#endif
 
         const cdx::Coverage coverage = idx_cov_table[local_idx];
 
@@ -143,11 +144,11 @@ std::vector<cdx::Coverage> projectCov2IdxGlobal(
             continue;
         }
 
-#ifndef NDEBUG
+        // Always validated: an out-of-range flat_idx indicates malformed
+        // input data, not just an internal debug invariant.
         if (static_cast<std::size_t>(flat_idx) >= flat_idx_cov_table.size()) {
             throw std::out_of_range("Flat index exceeds global coverage table bounds.");
         }
-#endif
 
         const cdx::Coverage coverage = cov_table[node_offset];
         if (coverage != 0) {
@@ -223,11 +224,12 @@ std::pair<std::vector<cdx::Coverage>, std::vector<cdx::PosBp>> expandPosCovGloba
         for (std::size_t local_idx = 0; local_idx < node_count; ++local_idx) {
             const std::size_t local_pos_idx = pos_offset + local_idx;
 
-#ifndef NDEBUG
+            // Always validated: inconsistent component/idx2bp offset
+            // tables indicate malformed input data, not just an internal
+            // debug invariant.
             if (local_pos_idx + 1 >= idx2bp.size()) {
                 throw std::out_of_range("idx2bp access exceeds bounds.");
             }
-#endif
 
             // Local node base-pair coordinates within component
             const cdx::PosBp local_start_bp = idx2bp[local_pos_idx];
