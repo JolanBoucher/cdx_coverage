@@ -2,6 +2,8 @@ name: Ubuntu Build
 
 on:
   workflow_dispatch:
+  push:
+  pull_request:
 
 jobs:
   build:
@@ -50,6 +52,11 @@ jobs:
         run: |
           cmake --build build -j"$(nproc)"
         working-directory: cdx_coverage
+
+      - name: Run tests (ctest)
+        run: |
+          ctest --output-on-failure
+        working-directory: cdx_coverage/build
 
       - name: Smoke test
         run: |

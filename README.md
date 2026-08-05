@@ -109,9 +109,36 @@ brew install cmake pkg-config protobuf abseil htslib libomp cairo cli11
 ### Ubuntu 20.04 or newer
 
 Ubuntu 20.04's default GCC (9.4) is old enough that a newer compiler is
-recommended; the CI workflow (`.github/workflows/ubuntu.yml`) pulls GCC 11
-from the `ubuntu-toolchain-r/test` PPA on 20.04 specifically. On 22.04+ the
-default GCC is new enough and no extra step is needed.
+recommended, and its packaged Abseil is too old for the Logging symbols
+`cdx_coverage` needs (see below) — there's more moving parts here than on
+macOS/Homebrew, so **using the install script below is strongly
+recommended** over doing this by hand.
+
+#### Recommended: `scripts/install_ubuntu20.sh`
+
+This is the same script the CI workflow (`.github/workflows/ubuntu.yml`)
+runs on every commit, on both Ubuntu 20.04 and 24.04, so it's kept honest by
+that CI run rather than going stale. It installs every system package
+above, pulls in GCC 11 on 20.04 specifically (skipped automatically on
+newer releases where the default compiler is already new enough), builds
+and installs a modern Abseil from source, resolves CLI11, and initializes
+the `deps/libvgio` submodule — all idempotent, safe to re-run. Works
+whether run as a regular user (uses `sudo`) or as root (e.g. inside a
+minimal Docker container, where `sudo` usually isn't even installed).
+
+```bash
+git clone --recurse-submodules <repository-url> cdx_coverage
+cd cdx_coverage
+./scripts/install_ubuntu20.sh
+cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
+cmake --build build -j"$(nproc)"
+./build/cdx_coverage --help
+```
+
+#### Manual installation
+
+If you'd rather not run the script — or need to customize a step — here is
+what it does, by hand:
 
 > **Abseil:** Ubuntu's packaged `libabsl-dev` predates Abseil's Logging
 > library (`absl::log_internal_message` / `absl::log_internal_check_op`,
@@ -149,6 +176,12 @@ mkdir -p include/CLI
 curl -L -o include/CLI/CLI.hpp \
     https://github.com/CLIUtils/CLI11/releases/latest/download/CLI11.hpp
 ```
+
+Building Abseil from source and initializing the `deps/libvgio` submodule
+are left as an exercise here — see `scripts/install_ubuntu20.sh` itself for
+the exact, tested commands (it's the single source of truth CI also runs,
+so it's guaranteed not to drift out of date the way a second copy of these
+instructions here would).
 
 ## Building
 
