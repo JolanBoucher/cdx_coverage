@@ -23,18 +23,35 @@
 #
 # Usage:
 #   cd cdx_coverage
-#   ./scripts/install_ubuntu20.sh
-#   cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-#   cmake --build build -j"$(nproc)"
-#   ./build/cdx_coverage --help
+#   ./scripts/install_ubuntu20.sh              # installs deps, configures,
+#                                               # builds, and runs the test
+#                                               # suite (ctest)
+#   ./scripts/install_ubuntu20.sh --no-tests    # same, but skips building
+#                                               # and running the tests
 #
 # Safe to re-run: every step is idempotent (apt install of already-installed
-# packages is a no-op, Abseil/CLI11 steps are skipped if already present).
+# packages is a no-op, Abseil/CLI11 steps are skipped if already present,
+# cmake --build only rebuilds what changed).
 
 set -euo pipefail
 
+RUN_TESTS=1
+for arg in "$@"; do
+    case "$arg" in
+        --no-tests | --no-test | --skip-tests)
+            RUN_TESTS=0
+            ;;
+        *)
+            echo "Unknown argument: $arg" >&2
+            echo "Usage: $0 [--no-tests]" >&2
+            exit 1
+            ;;
+    esac
+done
+
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 CDX_COVERAGE_DIR="$(cd "${SCRIPT_DIR}/.." && pwd)"
+BUILD_DIR="${CDX_COVERAGE_DIR}/build"
 
 ABSEIL_TAG="20240722.0"   # Kept in sync with .github/workflows/ubuntu.yml -
                           # this is the version CI actually tests, not just
@@ -50,7 +67,7 @@ else
     SUDO="sudo"
 fi
 
-echo "==> [1/5] Installing system packages (apt)"
+echo "==> [1/6] Installing system packages (apt)"
 $SUDO apt update
 $SUDO apt install -y \
     build-essential \
@@ -80,7 +97,7 @@ $SUDO apt install -y \
 UBUNTU_VERSION_ID="$(. /etc/os-release && echo "${VERSION_ID:-unknown}")"
 
 if [ "${UBUNTU_VERSION_ID}" = "20.04" ]; then
-    echo "==> [2/5] Installing GCC 11 (Ubuntu 20.04's default GCC 9.4 is too"
+    echo "==> [2/6] Installing GCC 11 (Ubuntu 20.04's default GCC 9.4 is too"
     echo "    old for a robust C++17 baseline)"
     $SUDO add-apt-repository -y ppa:ubuntu-toolchain-r/test
     $SUDO apt update
@@ -88,7 +105,7 @@ if [ "${UBUNTU_VERSION_ID}" = "20.04" ]; then
     export CC=gcc-11
     export CXX=g++-11
 else
-    echo "==> [2/5] Ubuntu ${UBUNTU_VERSION_ID}: default compiler is new"
+    echo "==> [2/6] Ubuntu ${UBUNTU_VERSION_ID}: default compiler is new"
     echo "    enough, skipping the GCC-11 PPA step"
     export CC="${CC:-gcc}"
     export CXX="${CXX:-g++}"
@@ -97,7 +114,7 @@ echo "    Using CC=$CC CXX=$CXX for the rest of this script."
 echo "    Export these yourself before running cmake by hand later:"
 echo "      export CC=$CC CXX=$CXX"
 
-echo "==> [3/5] Installing CLI11 (header-only)"
+echo "==> [3/6] Installing CLI11 (header-only)"
 cd "${CDX_COVERAGE_DIR}"
 if [ -f include/CLI/CLI.hpp ]; then
     echo "    include/CLI/CLI.hpp already present, skipping"
@@ -111,7 +128,7 @@ else
         https://github.com/CLIUtils/CLI11/releases/latest/download/CLI11.hpp
 fi
 
-echo "==> [4/5] Building and installing Abseil ${ABSEIL_TAG} from source"
+echo "==> [4/6] Building and installing Abseil ${ABSEIL_TAG} from source"
 echo "    (Ubuntu's packaged libabsl-dev predates the Logging library"
 echo "    symbols - absl::log_internal_message, absl::log_internal_check_op"
 echo "    - that CMakeLists.txt links against)"
@@ -132,19 +149,39 @@ else
     $SUDO ldconfig
 fi
 
-echo "==> [5/5] Initializing cdx_coverage Git submodules (deps/libvgio +"
+echo "==> [5/6] Initializing cdx_coverage Git submodules (deps/libvgio +"
 echo "    nested deps/libhandlegraph)"
 cd "${CDX_COVERAGE_DIR}"
 git submodule update --init --recursive
 
+echo "==> [6/6] Configuring, building"
+if [ "${RUN_TESTS}" -eq 1 ]; then
+    echo "    and testing cdx_coverage"
+else
+    echo "    cdx_coverage (--no-tests given: skipping the test suite)"
+fi
+
+CDX_CMAKE_CONFIGURE_ARGS=(-DCMAKE_BUILD_TYPE=Release)
+if [ "${RUN_TESTS}" -eq 0 ]; then
+    # Also skip fetching/building GoogleTest entirely (CDX_BUILD_TESTS, see
+    # top-level CMakeLists.txt) - not just skip running ctest below - so this
+    # path works offline and doesn't waste time building test binaries no
+    # one is about to run.
+    CDX_CMAKE_CONFIGURE_ARGS+=(-DCDX_BUILD_TESTS=OFF)
+fi
+
+cmake -S "${CDX_COVERAGE_DIR}" -B "${BUILD_DIR}" "${CDX_CMAKE_CONFIGURE_ARGS[@]}"
+cmake --build "${BUILD_DIR}" -j"$(nproc)"
+
+if [ "${RUN_TESTS}" -eq 1 ]; then
+    echo "==> Running test suite (ctest)"
+    ctest --test-dir "${BUILD_DIR}" --output-on-failure
+fi
+
 cat <<EOF
 
-==> Done. Next steps:
+==> Done.
 
-    export CC=$CC CXX=$CXX
-    cd "${CDX_COVERAGE_DIR}"
-    cmake -S . -B build -DCMAKE_BUILD_TYPE=Release
-    cmake --build build -j"\$(nproc)"
-    ./build/cdx_coverage --help
+    "${BUILD_DIR}/cdx_coverage" --help
 
 EOF
