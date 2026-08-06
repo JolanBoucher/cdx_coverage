@@ -226,6 +226,9 @@ add_executable(cdx_coverage
         src/gam_io.cpp
         src/gam_io.h
         src/config.h
+        src/coverage_precision.h
+        src/coverage_gaps.cpp
+        src/coverage_gaps.h
         src/cdx_loader.cpp
         src/cdx_loader.h
         src/cov_projection.cpp

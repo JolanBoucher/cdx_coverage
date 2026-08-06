@@ -102,6 +102,21 @@ namespace {
     }
 
     /**
+     * @brief Human-readable label for a CoveragePrecision value, recorded in
+     *        report headers so a reader knows whether the coverage figures
+     *        below reflect base-pair-precision correction or plain
+     *        whole-node resolution.
+     */
+    [[nodiscard]]
+    std::string coveragePrecisionLabel(const CoveragePrecision precision) {
+        switch (precision) {
+            case CoveragePrecision::Base: return "base (per-base-pair)";
+            case CoveragePrecision::Node: return "node (whole-node resolution)";
+        }
+        return "unknown"; // Unreachable for a valid enum value; keeps -Wreturn-type quiet.
+    }
+
+    /**
      * @brief Write a formatted coverage-statistics report section.
      *
      * Emits a human-readable summary of coverage metrics for a genomic region,
@@ -462,7 +477,8 @@ namespace output {
         const std::filesystem::path &output_path,
         const GamMappingStats &mapping_stats,
         const std::vector<cdx::Coverage> &coverage,
-        const std::string &component_name
+        const std::string &component_name,
+        const CoveragePrecision precision
     ) {
 
         // Validate basic accounting relationships between mapping categories.
@@ -507,6 +523,7 @@ namespace output {
         report << std::string(70, '=') << '\n';
         report << "COVERAGE REPORT\n";
         report << "Component: " << component_name << '\n';
+        report << "Coverage precision: " << coveragePrecisionLabel(precision) << '\n';
         report << std::string(70, '=') << "\n\n";
 
         report << "[ Mapping Statistics ]\n";
@@ -531,7 +548,8 @@ namespace output {
         const std::vector<cdx::PosBp> &component_offsets,
         const std::vector<std::string> &component_names,
         const GamMappingStats &mapping_stats,
-        int threads
+        int threads,
+        const CoveragePrecision precision
     ) {
         // Validate that component_offsets describes a complete partition of the flattened coverage table.
         if (component_offsets.size() < 2) {
@@ -585,6 +603,7 @@ namespace output {
         // Write report header and mapping statistics shared by all components.
         report << std::string(70, '=') << '\n';
         report << "COVERAGE REPORT\n";
+        report << "Coverage precision: " << coveragePrecisionLabel(precision) << '\n';
         report << std::string(70, '=') << "\n\n";
 
         report << "[ Mapping Statistics ]\n";

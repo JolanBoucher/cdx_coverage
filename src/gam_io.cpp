@@ -1,8 +1,11 @@
 #include "gam_io.h"
 #include "cdx_types.h"
 #include "config.h"
+#include "coverage_gaps.h"
+#include "coverage_precision.h"
 
 #include <vg/vg.pb.h>
+#include <vg/io/edit.hpp>
 #include <vg/io/message_iterator.hpp>
 #include <vg/io/registry.hpp>
 #include <google/protobuf/arena.h>
@@ -13,8 +16,10 @@
 #include <exception>
 #include <fstream>
 #include <iostream>
+#include <iterator>
 #include <limits>
 #include <memory>
+#include <optional>
 #include <stdexcept>
 #include <string>
 #include <vector>
@@ -27,7 +32,10 @@ GamMappingStats process_gam(
     cdx::Nid nid_min,
     std::size_t batch_size,
     int decompression_threads,
-    int worker_threads
+    int worker_threads,
+    CoveragePrecision precision,
+    const std::vector<cdx::SeqLen>* node_lengths,
+    std::vector<BpGap>* out_gaps
 ) {
     // 1. Validate mandatory function arguments
     if (batch_size == 0) {
@@ -41,6 +49,24 @@ GamMappingStats process_gam(
     }
     if (target.empty()) {
         throw std::invalid_argument("Target coverage vector must not be empty.");
+    }
+
+    // Base-precision mode needs a per-node length lookup (to know where a
+    // node ends, for deletion/boundary-gap geometry) and somewhere to write
+    // the gaps it finds. Both are optional (nullable) parameters precisely
+    // so that Node-mode callers don't have to build/own them at all.
+    const bool base_precision = (precision == CoveragePrecision::Base);
+    if (base_precision) {
+        if (node_lengths == nullptr || node_lengths->size() != target.size()) {
+            throw std::invalid_argument(
+                "node_lengths must be provided and match target's size when "
+                "precision == CoveragePrecision::Base."
+            );
+        }
+        if (out_gaps == nullptr) {
+            throw std::invalid_argument("out_gaps must be provided when precision == CoveragePrecision::Base.");
+        }
+        out_gaps->clear();
     }
 
     std::ifstream gam_stream(gam_file, std::ios::in | std::ios::binary);
@@ -65,6 +91,14 @@ GamMappingStats process_gam(
     // Allocate thread-local structures to prevent false sharing and race conditions during computation
     std::vector local_coverages(static_cast<std::size_t>(active_threads), std::vector<std::uint32_t>(coverage_size, 0));
     std::vector<GamMappingStats> local_stats(static_cast<std::size_t>(active_threads));
+
+    // One gap list per thread, mirroring local_coverages/local_stats above -
+    // each thread only ever appends to its own slot, so no synchronization
+    // is needed. Left as empty, unused vectors (negligible cost: no heap
+    // allocation happens until the first push_back) when base_precision is
+    // false, so Node-mode runs pay nothing extra here.
+    std::vector<std::vector<BpGap> > local_gaps(static_cast<std::size_t>(active_threads));
+
     std::exception_ptr reader_exception;
 
     try {
@@ -168,6 +202,101 @@ GamMappingStats process_gam(
 
                                     ++coverage[node_offset];
                                     read_maps_to_query = true;
+
+                                    // ---- Base-precision gap detection ----
+                                    // The increment above already gave this
+                                    // node a full +1 node-level credit for
+                                    // this read. Everything below is a pure
+                                    // refinement of that credit: it locates
+                                    // which base-pair ranges of the node
+                                    // this specific mapping did NOT actually
+                                    // traverse (deletions, and - only for
+                                    // the first/last mapping of the path -
+                                    // read-boundary under-reach), and
+                                    // records them as BpGap entries for
+                                    // later subtraction once coverage has
+                                    // been expanded into base-pair space
+                                    // (see applyBpGapsQuery/Global in
+                                    // cov_projection.h). It never modifies
+                                    // `coverage` itself.
+                                    if (base_precision) {
+                                        const cdx::SeqLen node_length = (*node_lengths)[node_offset];
+
+                                        // A zero-length node lookup can only happen on malformed/
+                                        // inconsistent input (every real node has >= 1 base pair) -
+                                        // skip rather than feed a degenerate length into the geometry
+                                        // helpers below.
+                                        if (node_length > 0) {
+                                            const vg::Mapping &mapping = path.mapping(i);
+                                            const vg::Position &mapping_position = mapping.position();
+
+                                            // Clamp defensively: a corrupt/adversarial GAM could in
+                                            // principle claim an offset past the node's own length.
+                                            // Named distinctly from the outer `raw_offset` (the node's
+                                            // nid-offset, used below when emitting BpGap entries) to
+                                            // avoid shadowing it - this one is the mapping's intra-node
+                                            // Position::offset() instead.
+                                            const std::int64_t raw_mapping_offset = mapping_position.offset();
+                                            const cdx::SeqLen offset = raw_mapping_offset > 0
+                                                ? static_cast<cdx::SeqLen>(std::min<std::int64_t>(raw_mapping_offset, node_length))
+                                                : cdx::SeqLen{0};
+                                            const bool is_reverse = mapping_position.is_reverse();
+
+                                            const bool is_first_mapping = (i == 0);
+                                            const bool is_last_mapping = (i == path.mapping_size() - 1);
+
+                                            // Bases consumed so far, expressed in this mapping's own
+                                            // walk order (0 = the first base the mapping consumes,
+                                            // regardless of strand) - fed to walkSpanToForwardRange /
+                                            // trailingUncoveredRange, which handle the forward/reverse
+                                            // orientation conversion.
+                                            cdx::SeqLen walk_cursor = 0;
+
+                                            for (int edit_idx = 0; edit_idx < mapping.edit_size(); ++edit_idx) {
+                                                const vg::Edit &edit = mapping.edit(edit_idx);
+                                                const std::int32_t raw_from_length = edit.from_length();
+                                                const cdx::SeqLen edit_from_length = raw_from_length > 0
+                                                    ? static_cast<cdx::SeqLen>(raw_from_length)
+                                                    : cdx::SeqLen{0};
+
+                                                // Only deletions leave a base-pair gap: they consume
+                                                // "from" (reference/node) length without the read ever
+                                                // being sequenced against it. Matches AND mismatches/
+                                                // substitutions both consume from_length while genuinely
+                                                // being covered by a read base, so they are deliberately
+                                                // left uncorrected - this tool reports raw read depth,
+                                                // not concordance with the reference. Insertions consume
+                                                // no "from" length at all, so they can never produce a
+                                                // gap either (there is no node position to subtract from).
+                                                if (vg::io::edit_is_deletion(edit)) {
+                                                    const ForwardRange gap_range = walkSpanToForwardRange(
+                                                        node_length, offset, is_reverse,
+                                                        walk_cursor, walk_cursor + edit_from_length
+                                                    );
+                                                    if (!gap_range.empty()) {
+                                                        local_gaps[tid].push_back(BpGap{raw_offset, gap_range});
+                                                    }
+                                                }
+
+                                                walk_cursor += edit_from_length;
+                                            }
+
+                                            // Boundary under-coverage: only the very first and last
+                                            // mapping of a read's path can start/end partway through
+                                            // their node - internal mappings always walk their node
+                                            // edge to edge, so these are no-ops for them by construction.
+                                            if (is_first_mapping) {
+                                                if (const auto gap = leadingUncoveredRange(node_length, offset, is_reverse)) {
+                                                    local_gaps[tid].push_back(BpGap{raw_offset, *gap});
+                                                }
+                                            }
+                                            if (is_last_mapping) {
+                                                if (const auto gap = trailingUncoveredRange(node_length, offset, is_reverse, walk_cursor)) {
+                                                    local_gaps[tid].push_back(BpGap{raw_offset, *gap});
+                                                }
+                                            }
+                                        }
+                                    }
                                 }
 
                                 if (read_is_mapped) {
@@ -259,6 +388,28 @@ GamMappingStats process_gam(
             } else {
                 target[node_offset] = static_cast<cdx::Coverage>(total_coverage);
             }
+        }
+    }
+
+    // Concatenate every thread's gap list into the caller-supplied output
+    // vector. This is a single-threaded linear pass, but it operates on
+    // however many gaps were actually found (proportional to read/edit
+    // count), not on graph or genome size - the same cost class as
+    // `expandPosCovQuery`'s single-threaded fill, not the parallel scan
+    // above, so it stays cheap even for very large runs.
+    if (base_precision) {
+        std::size_t total_gap_count = 0;
+        for (const auto &thread_gap_list: local_gaps) {
+            total_gap_count += thread_gap_list.size();
+        }
+
+        out_gaps->reserve(out_gaps->size() + total_gap_count);
+        for (auto &thread_gap_list: local_gaps) {
+            out_gaps->insert(
+                out_gaps->end(),
+                std::make_move_iterator(thread_gap_list.begin()),
+                std::make_move_iterator(thread_gap_list.end())
+            );
         }
     }
 

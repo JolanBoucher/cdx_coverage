@@ -255,6 +255,40 @@ namespace {
 } // anonymous namespace
 
 // =============================================================================
+// --coverage-precision / -p
+//
+// Mirrors CliComponentTypeOptionTest above (parse_coverage_precision() is a
+// direct copy of parse_component_type()'s structure), with one addition:
+// the default is Base (not the "cheap/original" option), unlike
+// --component-type defaulting to Linear - see coverage_precision.h for why.
+// =============================================================================
+namespace {
+    TEST(CliCoveragePrecisionOptionTest, DefaultIsBase) {
+        EXPECT_EQ(parseWithCdxGam().coverage_precision, CoveragePrecision::Base);
+    }
+
+    TEST(CliCoveragePrecisionOptionTest, BaseAliasesAccepted) {
+        for (const std::string &value: {"b", "base", "B", "BASE", "Base"}) {
+            EXPECT_EQ(parseWithCdxGam({"-p", value}).coverage_precision, CoveragePrecision::Base) << "value=" << value;
+        }
+    }
+
+    TEST(CliCoveragePrecisionOptionTest, NodeAliasesAccepted) {
+        for (const std::string &value: {"n", "node", "N", "NODE", "Node"}) {
+            EXPECT_EQ(parseWithCdxGam({"-p", value}).coverage_precision, CoveragePrecision::Node) << "value=" << value;
+        }
+    }
+
+    TEST(CliCoveragePrecisionOptionTest, InvalidValueThrows) {
+        EXPECT_THROW(parseWithCdxGam({"-p", "ultra"}), std::runtime_error);
+    }
+
+    TEST(CliCoveragePrecisionOptionTest, LongFormOptionNameAccepted) {
+        EXPECT_EQ(parseWithCdxGam({"--coverage-precision", "node"}).coverage_precision, CoveragePrecision::Node);
+    }
+} // anonymous namespace
+
+// =============================================================================
 // -t/--worker-threads and -T/--decompression-threads
 // =============================================================================
 namespace {

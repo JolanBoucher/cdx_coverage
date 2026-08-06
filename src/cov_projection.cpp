@@ -16,6 +16,81 @@
 #include <utility>
 #include <vector>
 
+namespace {
+    /**
+     * @brief Decrements every position in [start, end) of @p bp_coverage by 1,
+     *        throwing rather than silently underflowing if any position is
+     *        already at 0.
+     *
+     * `cdx::Coverage` is unsigned, so an unchecked `--bp_coverage[pos]` on a
+     * value already at 0 would wrap around to the type's maximum value
+     * instead of going negative - silently turning a correction into a
+     * spurious coverage spike. That should never legitimately happen: every
+     * BpGap is produced by exactly one read's mapping, and that same read
+     * also contributed the +1 node-level credit being refined (see
+     * gam_io.cpp's per-mapping gap-detection block), so the total number of
+     * gaps ever touching a given position can never exceed that position's
+     * coverage value. Hitting 0 here therefore indicates a real bug in the
+     * gap geometry (coverage_gaps.cpp) or in how it was wired up - not
+     * malformed GAM content - hence throwing instead of clamping.
+     *
+     * @throws std::out_of_range If @p end exceeds bp_coverage's size.
+     * @throws std::logic_error If a position within the range is already 0.
+     */
+    void decrementRangeOrThrow(
+        std::vector<cdx::Coverage> &bp_coverage,
+        const cdx::PosBp start,
+        const cdx::PosBp end
+    ) {
+        if (end > bp_coverage.size()) {
+            throw std::out_of_range(
+                "Coverage gap range [" + std::to_string(start) + ", " + std::to_string(end) +
+                ") exceeds bp_coverage bounds (" + std::to_string(bp_coverage.size()) + ")."
+            );
+        }
+
+        for (cdx::PosBp pos = start; pos < end; ++pos) {
+            if (bp_coverage[pos] == 0) {
+                throw std::logic_error(
+                    "Coverage gap would decrement bp_coverage[" + std::to_string(pos) +
+                    "] below zero - this indicates a bug in coverage-gap geometry rather than "
+                    "malformed input, since every gap is bounded by the read-derived node-level "
+                    "credit it refines."
+                );
+            }
+            --bp_coverage[pos];
+        }
+    }
+
+    /**
+     * @brief Locates the component owning a global flattened node index.
+     *
+     * @p component_offsets partitions the flat index space [0, total_nodes)
+     * into contiguous per-component ranges; the component owning @p flat_idx
+     * is the last boundary that is <= flat_idx.
+     *
+     * @throws std::out_of_range If @p flat_idx does not fall within any
+     *         component's range described by @p component_offsets.
+     */
+    [[nodiscard]] std::size_t findComponentForFlatIdx(
+        const std::vector<cdx::RecordCount> &component_offsets,
+        const cdx::FlatIdx flat_idx
+    ) {
+        // upper_bound finds the first boundary strictly greater than
+        // flat_idx; the owning component is the one just before it.
+        const auto it = std::upper_bound(
+            component_offsets.begin(), component_offsets.end(),
+            static_cast<cdx::RecordCount>(flat_idx)
+        );
+
+        if (it == component_offsets.begin() || it == component_offsets.end()) {
+            throw std::out_of_range("Flat index does not fall within any component's node range.");
+        }
+
+        return static_cast<std::size_t>(std::distance(component_offsets.begin(), it)) - 1;
+    }
+} // anonymous namespace
+
 // Projects query coverage from nid-space into local idx-space.
 [[nodiscard]]
 std::vector<cdx::Coverage> projectCov2IdxQuery(
@@ -304,4 +379,179 @@ std::vector<cdx::Coverage> trimCoverageToQuery(
         }
     }
     return trimmed;
+}
+
+// Builds a raw-nid-offset-indexed node length lookup for a single component.
+[[nodiscard]]
+std::vector<cdx::SeqLen> buildNodeLengthsQuery(
+    const std::vector<cdx::Idx> &nid2idx,
+    const std::vector<cdx::PosBp> &idx2bp
+) {
+    if (idx2bp.size() < 2) {
+        throw std::invalid_argument("idx2bp array must contain at least origin and final position.");
+    }
+
+    const std::size_t component_size = idx2bp.size() - 1;
+    std::vector<cdx::SeqLen> node_lengths(nid2idx.size(), 0);
+
+    for (std::size_t nid_offset = 0; nid_offset < nid2idx.size(); ++nid_offset) {
+        const cdx::Idx local_idx = nid2idx[nid_offset];
+
+        // Sentinel-mapped nodes are outside the active query/component -
+        // process_gam filters them out via valid_nodes before gap detection
+        // would ever consult their length, so a length of 0 is never read.
+        if (local_idx == cfg::NOT_IN_QUERY || local_idx == cfg::NOT_IN_COMPO) {
+            continue;
+        }
+
+        if (static_cast<std::size_t>(local_idx) >= component_size) {
+            throw std::out_of_range("Local index exceeds component size bounds.");
+        }
+
+        const cdx::PosBp start_bp = idx2bp[local_idx];
+        const cdx::PosBp end_bp = idx2bp[static_cast<std::size_t>(local_idx) + 1];
+
+        if (start_bp > end_bp) {
+            throw std::runtime_error("Non-monotonic base-pair coordinates detected in idx2bp.");
+        }
+
+        const cdx::PosBp length = end_bp - start_bp;
+
+        // Defensive clamp against SeqLen (32-bit) overflow: no real node
+        // approaches 4 billion base pairs, but this keeps the cast total.
+        node_lengths[nid_offset] = length > std::numeric_limits<cdx::SeqLen>::max()
+                ? std::numeric_limits<cdx::SeqLen>::max()
+                : static_cast<cdx::SeqLen>(length);
+    }
+
+    return node_lengths;
+}
+
+// Builds a raw-nid-offset-indexed node length lookup for the whole graph.
+[[nodiscard]]
+std::vector<cdx::SeqLen> buildNodeLengthsGlobal(
+    const std::vector<cdx::FlatIdx> &nid2flat_idx,
+    const std::vector<cdx::RecordCount> &component_offsets,
+    const std::vector<cdx::PosBp> &idx2bp,
+    const std::vector<cdx::RecordCount> &idx2bp_offsets
+) {
+    if (component_offsets.size() < 2 || idx2bp_offsets.size() != component_offsets.size()) {
+        throw std::invalid_argument(
+            "Component boundary offset tables must contain identical sizes of at least 2 entries.");
+    }
+
+    std::vector<cdx::SeqLen> node_lengths(nid2flat_idx.size(), 0);
+
+    for (std::size_t nid_offset = 0; nid_offset < nid2flat_idx.size(); ++nid_offset) {
+        const cdx::FlatIdx flat_idx = nid2flat_idx[nid_offset];
+
+        if (flat_idx == cfg::INVALID_FLAT_IDX) {
+            continue;
+        }
+
+        const std::size_t comp_id = findComponentForFlatIdx(component_offsets, flat_idx);
+        const cdx::FlatIdx local_idx_in_component = flat_idx - static_cast<cdx::FlatIdx>(component_offsets[comp_id]);
+        const std::size_t pos_idx = static_cast<std::size_t>(idx2bp_offsets[comp_id]) +
+                                     static_cast<std::size_t>(local_idx_in_component);
+
+        if (pos_idx + 1 >= idx2bp.size()) {
+            throw std::out_of_range("idx2bp access exceeds bounds while building global node lengths.");
+        }
+
+        const cdx::PosBp start_bp = idx2bp[pos_idx];
+        const cdx::PosBp end_bp = idx2bp[pos_idx + 1];
+
+        if (start_bp > end_bp) {
+            throw std::runtime_error("Non-monotonic base-pair coordinates detected in idx2bp.");
+        }
+
+        const cdx::PosBp length = end_bp - start_bp;
+        node_lengths[nid_offset] = length > std::numeric_limits<cdx::SeqLen>::max()
+                ? std::numeric_limits<cdx::SeqLen>::max()
+                : static_cast<cdx::SeqLen>(length);
+    }
+
+    return node_lengths;
+}
+
+// Applies base-pair-precision coverage gaps to a single-component array.
+void applyBpGapsQuery(
+    std::vector<cdx::Coverage> &bp_coverage,
+    const std::vector<BpGap> &gaps,
+    const std::vector<cdx::Idx> &nid2idx,
+    const std::vector<cdx::PosBp> &idx2bp
+) {
+    for (const BpGap &gap: gaps) {
+        if (gap.nid_offset >= nid2idx.size()) {
+            throw std::out_of_range("BpGap nid_offset exceeds nid2idx bounds.");
+        }
+
+        const cdx::Idx local_idx = nid2idx[gap.nid_offset];
+
+        // The gap's node was excluded from the active query/component by
+        // process_gam itself (same sentinel check as projectCov2IdxQuery) -
+        // there is nothing in bp_coverage to correct for it.
+        if (local_idx == cfg::NOT_IN_QUERY || local_idx == cfg::NOT_IN_COMPO) {
+            continue;
+        }
+
+        if (static_cast<std::size_t>(local_idx) + 1 >= idx2bp.size()) {
+            throw std::out_of_range("Local index exceeds idx2bp bounds while applying coverage gaps.");
+        }
+
+        const cdx::PosBp node_start_bp = idx2bp[local_idx];
+        const cdx::PosBp global_start = node_start_bp + gap.range.start;
+        const cdx::PosBp global_end = node_start_bp + gap.range.end;
+
+        decrementRangeOrThrow(bp_coverage, global_start, global_end);
+    }
+}
+
+// Applies base-pair-precision coverage gaps to the flattened global array.
+void applyBpGapsGlobal(
+    std::vector<cdx::Coverage> &flat_bp_coverage,
+    const std::vector<BpGap> &gaps,
+    const std::vector<cdx::FlatIdx> &nid2flat_idx,
+    const std::vector<cdx::RecordCount> &component_offsets,
+    const std::vector<cdx::PosBp> &idx2bp,
+    const std::vector<cdx::RecordCount> &idx2bp_offsets,
+    const std::vector<cdx::PosBp> &component_bp_offsets
+) {
+    if (component_offsets.size() < 2
+        || idx2bp_offsets.size() != component_offsets.size()
+        || component_bp_offsets.size() != component_offsets.size()) {
+        throw std::invalid_argument(
+            "Component boundary offset tables must contain identical sizes of at least 2 entries.");
+    }
+
+    for (const BpGap &gap: gaps) {
+        if (gap.nid_offset >= nid2flat_idx.size()) {
+            throw std::out_of_range("BpGap nid_offset exceeds nid2flat_idx bounds.");
+        }
+
+        const cdx::FlatIdx flat_idx = nid2flat_idx[gap.nid_offset];
+
+        // Same reasoning as applyBpGapsQuery(): a node with no flat index
+        // was excluded from GlobalData::node_coverage entirely.
+        if (flat_idx == cfg::INVALID_FLAT_IDX) {
+            continue;
+        }
+
+        const std::size_t comp_id = findComponentForFlatIdx(component_offsets, flat_idx);
+        const cdx::FlatIdx local_idx_in_component = flat_idx - static_cast<cdx::FlatIdx>(component_offsets[comp_id]);
+        const std::size_t pos_idx = static_cast<std::size_t>(idx2bp_offsets[comp_id]) +
+                                     static_cast<std::size_t>(local_idx_in_component);
+
+        if (pos_idx + 1 >= idx2bp.size()) {
+            throw std::out_of_range("idx2bp access exceeds bounds while applying coverage gaps.");
+        }
+
+        const cdx::PosBp node_start_bp = idx2bp[pos_idx];
+        const cdx::PosBp component_offset_bp = component_bp_offsets[comp_id];
+
+        const cdx::PosBp global_start = component_offset_bp + node_start_bp + gap.range.start;
+        const cdx::PosBp global_end = component_offset_bp + node_start_bp + gap.range.end;
+
+        decrementRangeOrThrow(flat_bp_coverage, global_start, global_end);
+    }
 }

@@ -127,6 +127,34 @@ namespace {
 
 
     /**
+     * @brief Parses and normalizes the coverage-precision mode from a string.
+     *
+     * Trims input whitespace, converts characters to lower case, and maps
+     * recognized flags to the corresponding `CoveragePrecision` enum value.
+     * Mirrors `parse_component_type()` above.
+     *
+     * @param value Raw string input (e.g., "base", "b", "NODE", "n").
+     * @return CoveragePrecision Enum value indicating `CoveragePrecision::Node`
+     *         or `CoveragePrecision::Base`.
+     * @throws std::invalid_argument If the normalized string is not a valid alias.
+     */
+    CoveragePrecision parse_coverage_precision(std::string value) {
+        value = trim(value); // Strip leading/trailing whitespace
+
+        // Convert string to lower case for case-insensitive matching
+        std::transform(value.begin(), value.end(), value.begin(), [](unsigned char c) {
+            return static_cast<char>(std::tolower(c));
+        });
+
+        // Map recognized aliases to enum values
+        if (value == "n" || value == "node") return CoveragePrecision::Node;
+        if (value == "b" || value == "base") return CoveragePrecision::Base;
+
+        throw std::invalid_argument("Coverage precision must be 'node'/'n' or 'base'/'b'.");
+    }
+
+
+    /**
      * @brief Parses plot figure dimensions from a string formatted as WIDTHxHEIGHT.
      *
      * Supports standard 'x' or 'X' separators as well as the UTF-8 multiplication symbol ('×').
@@ -242,6 +270,17 @@ CliArgs parse_args(const int argc, char **argv) {
         "Graph coordinate mapping structure:\n"
         "'linear'/'l' or 'circular'/'c'.\n"
         "Default: linear."
+    );
+
+    std::string coverage_precision_raw;
+    group_query->add_option(
+        "-p,--coverage-precision",
+        coverage_precision_raw,
+        "How precisely to compute coverage:\n"
+        "'base'/'b' = per base pair (accurate, default).\n"
+        "'node'/'n' = per whole node (faster, uses less memory).\n"
+        "Use 'node' for very large or deep GAM files.\n"
+        "Default: base."
     );
 
     // ============================================================
@@ -421,6 +460,14 @@ CliArgs parse_args(const int argc, char **argv) {
             args.component_type = parse_component_type(comp_type_raw);
         } catch (const std::exception &e) {
             throw std::runtime_error(std::string("Error parsing --component-type: ") + e.what());
+        }
+    }
+
+    if (!coverage_precision_raw.empty()) {
+        try {
+            args.coverage_precision = parse_coverage_precision(coverage_precision_raw);
+        } catch (const std::exception &e) {
+            throw std::runtime_error(std::string("Error parsing --coverage-precision: ") + e.what());
         }
     }
 

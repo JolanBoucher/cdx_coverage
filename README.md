@@ -39,6 +39,11 @@ contig) or a user-selected sub-region:
   via Cairo in the same process — no subprocess, no external interpreter.
 - **Multi-core throughout**: GAM decompression, coordinate projection, and
   multi-panel plot rendering (both linear and circular) are parallelized.
+- **Base-pair-precision coverage** (`-p/--coverage-precision base`,
+  default): corrects the node-level result for deletions and reads that
+  start/end partway through a node, down to single-base-pair resolution.
+  `-p node` opts back into the cheaper whole-node resolution for
+  memory-constrained machines or very large/deep GAM files.
 - **Linear or logarithmic coverage scale** (`--log`), configurable
   smoothing, downsampling, resolution, figure size, and colors.
 - **CDX inspection mode** (`-i/--inspect`) to list or describe graph
@@ -78,8 +83,7 @@ C++; Python only handles the polar plot drawing via
 required to build or run `cdx_coverage` with linear plots.
 
 By default, the build automatically provisions a private Python
-environment for this — see **[CIRCULAR_PLOT_SETUP.md](CIRCULAR_PLOT_SETUP.md)**
-for details, manual setup, and troubleshooting.
+environment for this — see **[CIRCULAR_PLOT_SETUP.md](./python_script/CIRCULAR_PLOT_SETUP.md)**for details, manual setup, and troubleshooting.
 
 ## Installing dependencies
 
@@ -200,7 +204,7 @@ The compiled binary is `build/cdx_coverage`. If a Python 3 interpreter was
 found during configuration, a private virtual environment for circular
 graph rendering is also provisioned automatically next to it (best-effort,
 never fails the build — see
-[CIRCULAR_PLOT_SETUP.md](CIRCULAR_PLOT_SETUP.md)).
+[CIRCULAR_PLOT_SETUP.md](./python_script/CIRCULAR_PLOT_SETUP.md)).
 
 To install system-wide:
 
@@ -271,6 +275,7 @@ cdx_coverage graph.cdx reads.gam \
 | `[GAM]` | Path to the GAM alignment file (required unless `-i/--inspect`). |
 | `-q, --query TEXT` | Scope the computation to one component: `COMPONENT` or `"COMPONENT START-END"` (0-based), by name or numeric ID. Omit to process the whole graph. |
 | `-c, --component-type` | `linear`/`l` (default) or `circular`/`c`. |
+| `-p, --coverage-precision` | `base`/`b` (default): per-base-pair coverage, correcting deletions and read-boundary over-counting. `node`/`n`: cheaper whole-node resolution, recommended on memory-constrained machines or very large/deep GAM files. |
 | `-i, --inspect [COMPONENT]` | Print CDX index contents and exit; no value lists all components. |
 | `-o, --output PATH` | Output directory. Default: `.` |
 | `--no-graph` | Skip coverage graph generation. |

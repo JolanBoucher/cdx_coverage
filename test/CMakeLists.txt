@@ -27,6 +27,27 @@ FetchContent_MakeAvailable(googletest)
 include(GoogleTest)
 
 # ---------------------------------------------------------------------------
+# coverage_gaps
+# ---------------------------------------------------------------------------
+# Pure geometry (walkSpanToForwardRange / leadingUncoveredRange /
+# trailingUncoveredRange) with zero Protobuf/vg_io dependency by design (see
+# coverage_gaps.h's file docstring) - only needs cdx_types.h (cdx::SeqLen)
+# from cdx_lib.
+add_executable(coverage_gaps_test
+        coverage_gaps_test.cpp
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/coverage_gaps.cpp"
+)
+
+target_compile_features(coverage_gaps_test PRIVATE cxx_std_17)
+
+target_link_libraries(coverage_gaps_test PRIVATE
+        cdx_lib
+        GTest::gtest_main
+)
+
+gtest_discover_tests(coverage_gaps_test)
+
+# ---------------------------------------------------------------------------
 # cov_projection
 # ---------------------------------------------------------------------------
 add_executable(cov_projection_test
@@ -125,9 +146,14 @@ gtest_discover_tests(cdx_loader_test)
 # ---------------------------------------------------------------------------
 # gam_io
 # ---------------------------------------------------------------------------
+# Also compiles coverage_gaps.cpp: gam_io.cpp calls into it (walkSpanToForwardRange
+# / leadingUncoveredRange / trailingUncoveredRange) from its base-precision
+# gap-detection block, so those symbols must be linked in even though most
+# tests below only exercise the (unaffected) default Node-precision path.
 add_executable(gam_io_test
         gam_io_test.cpp
         "${CMAKE_CURRENT_SOURCE_DIR}/../src/gam_io.cpp"
+        "${CMAKE_CURRENT_SOURCE_DIR}/../src/coverage_gaps.cpp"
 )
 
 target_compile_features(gam_io_test PRIVATE cxx_std_17)

@@ -528,7 +528,7 @@ namespace output {
             throw std::runtime_error(
                 "Cannot locate circular_plot.py. Set the CDX_CIRCULAR_PLOT_SCRIPT "
                 "environment variable to its full path, or ensure it was installed "
-                "next to the cdx_coverage executable (see CIRCULAR_PLOT_SETUP.md)."
+                "next to the cdx_coverage executable (see python_script/CIRCULAR_PLOT_SETUP.md)."
             );
         }
 

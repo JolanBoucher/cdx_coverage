@@ -93,6 +93,23 @@ namespace {
             timer.update_name("Whole pangenome loaded");
         }
 
+        // Base-precision mode needs a per-node length lookup before
+        // process_gam can be called (see coverage_gaps.h/gam_io.h) - built
+        // only when actually needed, so Node-mode runs never pay for it.
+        const bool base_precision = (args.coverage_precision == CoveragePrecision::Base);
+        std::vector<cdx::SeqLen> node_lengths;
+        std::vector<BpGap> coverage_gaps;
+
+        if (base_precision) {
+            cfg::ScopedTimer timer("Node length lookup built");
+            node_lengths = buildNodeLengthsGlobal(
+                data.nid2flat_idx,
+                data.layout.component_offsets,
+                data.idx2bp,
+                data.idx2bp_offsets
+            );
+        }
+
         // ============================================================
         // STEP 2: GAM Processing
         // ============================================================
@@ -108,7 +125,10 @@ namespace {
                 data.layout.graph_nid_min,
                 GAM_BATCH_SIZE,
                 args.decompression_threads,
-                args.worker_threads
+                args.worker_threads,
+                args.coverage_precision,
+                base_precision ? &node_lengths : nullptr,
+                base_precision ? &coverage_gaps : nullptr
             );
 
             timer.update_name("Processed " + cfg::formatInteger(mapping_stats.total) + " reads");
@@ -143,6 +163,24 @@ namespace {
                         data.idx2bp,
                         data.idx2bp_offsets
                     );
+        }
+
+        // Refine the uniform per-node fill above down to base-pair
+        // precision by subtracting every collected coverage gap. Applied
+        // here - after expansion, before any output is written - so every
+        // output (TSV, stats, graph) automatically reflects base-pair
+        // precision without needing to know it exists.
+        if (base_precision) {
+            cfg::ScopedTimer timer("Coverage gaps applied at base-pair precision");
+            applyBpGapsGlobal(
+                flat_bp_coverage,
+                coverage_gaps,
+                data.nid2flat_idx,
+                data.layout.component_offsets,
+                data.idx2bp,
+                data.idx2bp_offsets,
+                bp_component_offsets
+            );
         }
 
         const std::filesystem::path output_directory(args.output_directory);
@@ -184,7 +222,8 @@ namespace {
                     bp_component_offsets,
                     data.layout.component_names,
                     mapping_stats,
-                    args.worker_threads
+                    args.worker_threads,
+                    args.coverage_precision
                 );
 
                 timer.update_name("Statistics report saved (" + output_path.filename().string() + ')');
@@ -307,6 +346,18 @@ namespace {
             timer.update_name("Pangenome component " + target_name + " loaded");
         }
 
+        // Base-precision mode needs a per-node length lookup before
+        // process_gam can be called (see coverage_gaps.h/gam_io.h) - built
+        // only when actually needed, so Node-mode runs never pay for it.
+        const bool base_precision = (args.coverage_precision == CoveragePrecision::Base);
+        std::vector<cdx::SeqLen> node_lengths;
+        std::vector<BpGap> coverage_gaps;
+
+        if (base_precision) {
+            cfg::ScopedTimer timer("Node length lookup built");
+            node_lengths = buildNodeLengthsQuery(data.nid2idx, data.idx2bp);
+        }
+
         // ============================================================
         // STEP 2: GAM Processing
         // ============================================================
@@ -322,7 +373,10 @@ namespace {
                 data.component.nid_min,
                 GAM_BATCH_SIZE,
                 args.decompression_threads,
-                args.worker_threads
+                args.worker_threads,
+                args.coverage_precision,
+                base_precision ? &node_lengths : nullptr,
+                base_precision ? &coverage_gaps : nullptr
             );
 
             timer.update_name("Processed " + std::to_string(mapping_stats.total) + " GAM reads");
@@ -349,6 +403,19 @@ namespace {
         {
             cfg::ScopedTimer timer("Index coverage expanded to genomic coordinates");
             bp_coverage = expandPosCovQuery(idx_coverage, data.idx2bp);
+        }
+
+        // Refine the uniform per-node fill above down to base-pair
+        // precision, before the query-interval trim below - trimming only
+        // masks positions outside the requested range with a sentinel, it
+        // never changes indices, so applying gaps first or after would give
+        // the same result inside the query interval; doing it first keeps
+        // this step symmetric with the global pipeline (gaps are always
+        // applied right after expansion, before any query/output-specific
+        // step).
+        if (base_precision) {
+            cfg::ScopedTimer timer("Coverage gaps applied at base-pair precision");
+            applyBpGapsQuery(bp_coverage, coverage_gaps, data.nid2idx, data.idx2bp);
         }
 
         {
@@ -392,7 +459,8 @@ namespace {
                     output_path,
                     mapping_stats,
                     bp_coverage,
-                    data.component.compo_name
+                    data.component.compo_name,
+                    args.coverage_precision
                 );
 
                 timer.update_name("Statistics report saved (" + output_path.filename().string() + ')');

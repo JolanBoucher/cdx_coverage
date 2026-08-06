@@ -936,3 +936,246 @@ TEST(TrimCoverageToQueryTest, DoesNotMutateInputArgument) {
     EXPECT_EQ(cov, original);
     EXPECT_NE(&result, &cov);
 }
+
+// =============================================================================
+// buildNodeLengthsQuery
+//
+// Derives per-node base-pair length (end_bp - start_bp from idx2bp) indexed
+// by raw nid-offset, via nid2idx - the lookup table process_gam needs (as
+// its node_lengths parameter) to run in CoveragePrecision::Base mode.
+// =============================================================================
+
+// Three nodes of lengths 5, 3, 7, in identity nid-offset -> local-idx order.
+TEST(BuildNodeLengthsQueryTest, IdentityMappingComputesLengthsFromPrefixSums) {
+    const std::vector<cdx::Idx> nid2idx = {0, 1, 2};
+    const std::vector<cdx::PosBp> idx2bp = {0, 5, 8, 15}; // lengths: 5, 3, 7
+
+    EXPECT_EQ(buildNodeLengthsQuery(nid2idx, idx2bp),
+              (std::vector<cdx::SeqLen>{5, 3, 7}));
+}
+
+// Lengths must follow nid2idx's mapping, not physical array order.
+TEST(BuildNodeLengthsQueryTest, UnorderedIdxMappingFollowsTranslation) {
+    const std::vector<cdx::Idx> nid2idx = {2, 0, 1}; // nid0->idx2, nid1->idx0, nid2->idx1
+    const std::vector<cdx::PosBp> idx2bp = {0, 5, 8, 15}; // idx0 len 5, idx1 len 3, idx2 len 7
+
+    EXPECT_EQ(buildNodeLengthsQuery(nid2idx, idx2bp),
+              (std::vector<cdx::SeqLen>{7, 5, 3}));
+}
+
+// Sentinel-mapped nodes (outside the active query/component) get length 0
+// rather than crashing or being looked up in idx2bp.
+TEST(BuildNodeLengthsQueryTest, SentinelIndicesYieldZeroLength) {
+    const std::vector<cdx::Idx> nid2idx = {0, cfg::NOT_IN_QUERY, cfg::NOT_IN_COMPO, 1};
+    const std::vector<cdx::PosBp> idx2bp = {0, 5, 12};
+
+    EXPECT_EQ(buildNodeLengthsQuery(nid2idx, idx2bp),
+              (std::vector<cdx::SeqLen>{5, 0, 0, 7}));
+}
+
+// idx2bp must contain at least an origin and one node boundary.
+TEST(BuildNodeLengthsQueryTest, TooShortIdx2BpThrows) {
+    const std::vector<cdx::Idx> nid2idx = {0};
+    const std::vector<cdx::PosBp> idx2bp = {0};
+
+    EXPECT_THROW(buildNodeLengthsQuery(nid2idx, idx2bp), std::invalid_argument);
+}
+
+// A non-sentinel local_idx beyond idx2bp's node count is malformed input.
+TEST(BuildNodeLengthsQueryTest, OutOfRangeLocalIdxThrows) {
+    const std::vector<cdx::Idx> nid2idx = {5};
+    const std::vector<cdx::PosBp> idx2bp = {0, 10};
+
+    EXPECT_THROW(buildNodeLengthsQuery(nid2idx, idx2bp), std::out_of_range);
+}
+
+// =============================================================================
+// buildNodeLengthsGlobal
+//
+// Same idea as buildNodeLengthsQuery, but across a multi-component flattened
+// graph: raw nid-offset -> flat idx (nid2flat_idx) -> owning component
+// (component_offsets) -> component-local idx2bp segment (idx2bp_offsets).
+// =============================================================================
+
+// Two components: {len 4, len 6} and {len 2}, contiguous nid offsets.
+TEST(BuildNodeLengthsGlobalTest, TwoComponentsComputeCorrectLengths) {
+    const std::vector<cdx::FlatIdx> nid2flat_idx = {0, 1, 2};
+    const std::vector<cdx::RecordCount> component_offsets = {0, 2, 3}; // compo0: flat[0,2), compo1: flat[2,3)
+    const std::vector<cdx::PosBp> idx2bp = {0, 4, 10, 0, 2}; // compo0 prefix sums, compo1 prefix sums
+    const std::vector<cdx::RecordCount> idx2bp_offsets = {0, 3, 5};
+
+    EXPECT_EQ(buildNodeLengthsGlobal(nid2flat_idx, component_offsets, idx2bp, idx2bp_offsets),
+              (std::vector<cdx::SeqLen>{4, 6, 2}));
+}
+
+// A node with no flat index (excluded from the global graph entirely) gets length 0.
+TEST(BuildNodeLengthsGlobalTest, InvalidFlatIdxYieldsZeroLength) {
+    const std::vector<cdx::FlatIdx> nid2flat_idx = {cfg::INVALID_FLAT_IDX, 0};
+    const std::vector<cdx::RecordCount> component_offsets = {0, 1};
+    const std::vector<cdx::PosBp> idx2bp = {0, 9};
+    const std::vector<cdx::RecordCount> idx2bp_offsets = {0, 1};
+
+    EXPECT_EQ(buildNodeLengthsGlobal(nid2flat_idx, component_offsets, idx2bp, idx2bp_offsets),
+              (std::vector<cdx::SeqLen>{0, 9}));
+}
+
+// component_offsets/idx2bp_offsets must be consistently sized.
+TEST(BuildNodeLengthsGlobalTest, MismatchedBoundaryTablesThrow) {
+    const std::vector<cdx::FlatIdx> nid2flat_idx = {0};
+    const std::vector<cdx::RecordCount> component_offsets = {0, 1};
+    const std::vector<cdx::PosBp> idx2bp = {0, 5};
+    const std::vector<cdx::RecordCount> idx2bp_offsets = {0}; // wrong size
+
+    EXPECT_THROW(buildNodeLengthsGlobal(nid2flat_idx, component_offsets, idx2bp, idx2bp_offsets),
+                 std::invalid_argument);
+}
+
+// =============================================================================
+// applyBpGapsQuery
+//
+// Subtracts BpGap ranges from an already node-expanded, single-component
+// base-pair coverage array, translating each gap's raw nid-offset through
+// nid2idx/idx2bp - the last step of the base-pair-precision pipeline for
+// single-component (query-mode) coverage.
+// =============================================================================
+
+// A single deletion-shaped gap in the middle of a node decrements exactly
+// its own range, leaving the rest of the node's uniform fill untouched.
+TEST(ApplyBpGapsQueryTest, SingleGapDecrementsExactRange) {
+    // One node, 5bp long, node-level coverage 3 filled uniformly.
+    std::vector<cdx::Coverage> bp_coverage = {3, 3, 3, 3, 3};
+    const std::vector<cdx::Idx> nid2idx = {0};
+    const std::vector<cdx::PosBp> idx2bp = {0, 5};
+    const std::vector<BpGap> gaps = {BpGap{0, ForwardRange{1, 3}}};
+
+    applyBpGapsQuery(bp_coverage, gaps, nid2idx, idx2bp);
+
+    EXPECT_EQ(bp_coverage, (std::vector<cdx::Coverage>{3, 2, 2, 3, 3}));
+}
+
+// Multiple gaps (from different reads) touching the same position each
+// decrement it independently.
+TEST(ApplyBpGapsQueryTest, OverlappingGapsAccumulateDecrements) {
+    std::vector<cdx::Coverage> bp_coverage = {5, 5, 5};
+    const std::vector<cdx::Idx> nid2idx = {0};
+    const std::vector<cdx::PosBp> idx2bp = {0, 3};
+    const std::vector<BpGap> gaps = {
+        BpGap{0, ForwardRange{0, 2}},
+        BpGap{0, ForwardRange{1, 3}},
+    };
+
+    applyBpGapsQuery(bp_coverage, gaps, nid2idx, idx2bp);
+
+    EXPECT_EQ(bp_coverage, (std::vector<cdx::Coverage>{4, 3, 4}));
+}
+
+// A gap on a node translated to nid2idx's sentinel (outside the active
+// query/component) is silently skipped: nothing in bp_coverage refers to it.
+TEST(ApplyBpGapsQueryTest, SentinelMappedNodeGapIsSkipped) {
+    std::vector<cdx::Coverage> bp_coverage = {3, 3, 3};
+    const std::vector<cdx::Idx> nid2idx = {cfg::NOT_IN_QUERY};
+    const std::vector<cdx::PosBp> idx2bp = {0, 3};
+    const std::vector<BpGap> gaps = {BpGap{0, ForwardRange{0, 3}}};
+
+    applyBpGapsQuery(bp_coverage, gaps, nid2idx, idx2bp);
+
+    EXPECT_EQ(bp_coverage, (std::vector<cdx::Coverage>{3, 3, 3})); // unchanged
+}
+
+// A gap that would decrement an already-zero position signals an internal
+// inconsistency (see applyBpGapsQuery's docstring) rather than clamping.
+TEST(ApplyBpGapsQueryTest, DecrementBelowZeroThrows) {
+    std::vector<cdx::Coverage> bp_coverage = {0, 1};
+    const std::vector<cdx::Idx> nid2idx = {0};
+    const std::vector<cdx::PosBp> idx2bp = {0, 2};
+    const std::vector<BpGap> gaps = {BpGap{0, ForwardRange{0, 1}}};
+
+    EXPECT_THROW(applyBpGapsQuery(bp_coverage, gaps, nid2idx, idx2bp), std::logic_error);
+}
+
+// An out-of-bounds nid_offset (larger than nid2idx itself) is malformed input.
+TEST(ApplyBpGapsQueryTest, OutOfBoundsNidOffsetThrows) {
+    std::vector<cdx::Coverage> bp_coverage = {3};
+    const std::vector<cdx::Idx> nid2idx = {0};
+    const std::vector<cdx::PosBp> idx2bp = {0, 1};
+    const std::vector<BpGap> gaps = {BpGap{7, ForwardRange{0, 1}}};
+
+    EXPECT_THROW(applyBpGapsQuery(bp_coverage, gaps, nid2idx, idx2bp), std::out_of_range);
+}
+
+// An empty gap list is a no-op.
+TEST(ApplyBpGapsQueryTest, EmptyGapListLeavesCoverageUnchanged) {
+    std::vector<cdx::Coverage> bp_coverage = {1, 2, 3};
+    const std::vector<cdx::Idx> nid2idx = {0, 1, 2};
+    const std::vector<cdx::PosBp> idx2bp = {0, 1, 2, 3};
+
+    applyBpGapsQuery(bp_coverage, {}, nid2idx, idx2bp);
+
+    EXPECT_EQ(bp_coverage, (std::vector<cdx::Coverage>{1, 2, 3}));
+}
+
+// =============================================================================
+// applyBpGapsGlobal
+//
+// Same correction as applyBpGapsQuery, but each gap's node must additionally
+// be routed to the right component (via nid2flat_idx + component_offsets)
+// and shifted into the final flattened array (via component_bp_offsets) -
+// the last step of the base-pair-precision pipeline for whole-graph
+// (global-mode) coverage.
+// =============================================================================
+
+// Two components, each 1 node: gap on the second component's node must land
+// past the first component's whole span in the flattened array.
+TEST(ApplyBpGapsGlobalTest, GapOnSecondComponentLandsAtCorrectFlattenedOffset) {
+    // compo0: 1 node, 3bp, coverage {2,2,2}. compo1: 1 node, 2bp, coverage {4,4}.
+    std::vector<cdx::Coverage> flat_bp_coverage = {2, 2, 2, 4, 4};
+    const std::vector<cdx::FlatIdx> nid2flat_idx = {0, 1};
+    const std::vector<cdx::RecordCount> component_offsets = {0, 1, 2};
+    const std::vector<cdx::PosBp> idx2bp = {0, 3, 0, 2}; // compo0 prefix sums, compo1 prefix sums
+    const std::vector<cdx::RecordCount> idx2bp_offsets = {0, 2, 4};
+    const std::vector<cdx::PosBp> component_bp_offsets = {0, 3, 5};
+
+    const std::vector<BpGap> gaps = {BpGap{1, ForwardRange{0, 1}}}; // second node, first base pair
+
+    applyBpGapsGlobal(
+        flat_bp_coverage, gaps, nid2flat_idx, component_offsets, idx2bp, idx2bp_offsets, component_bp_offsets
+    );
+
+    EXPECT_EQ(flat_bp_coverage, (std::vector<cdx::Coverage>{2, 2, 2, 3, 4}));
+}
+
+// A gap on a node with no flat index (excluded from the whole graph) is skipped.
+TEST(ApplyBpGapsGlobalTest, InvalidFlatIdxGapIsSkipped) {
+    std::vector<cdx::Coverage> flat_bp_coverage = {5, 5};
+    const std::vector<cdx::FlatIdx> nid2flat_idx = {cfg::INVALID_FLAT_IDX};
+    const std::vector<cdx::RecordCount> component_offsets = {0, 1};
+    const std::vector<cdx::PosBp> idx2bp = {0, 2};
+    const std::vector<cdx::RecordCount> idx2bp_offsets = {0, 1};
+    const std::vector<cdx::PosBp> component_bp_offsets = {0, 2};
+
+    const std::vector<BpGap> gaps = {BpGap{0, ForwardRange{0, 2}}};
+
+    applyBpGapsGlobal(
+        flat_bp_coverage, gaps, nid2flat_idx, component_offsets, idx2bp, idx2bp_offsets, component_bp_offsets
+    );
+
+    EXPECT_EQ(flat_bp_coverage, (std::vector<cdx::Coverage>{5, 5})); // unchanged
+}
+
+// Inconsistently sized boundary tables are rejected up front.
+TEST(ApplyBpGapsGlobalTest, MismatchedBoundaryTablesThrow) {
+    std::vector<cdx::Coverage> flat_bp_coverage = {1};
+    const std::vector<cdx::FlatIdx> nid2flat_idx = {0};
+    const std::vector<cdx::RecordCount> component_offsets = {0, 1};
+    const std::vector<cdx::PosBp> idx2bp = {0, 1};
+    const std::vector<cdx::RecordCount> idx2bp_offsets = {0, 1};
+    const std::vector<cdx::PosBp> component_bp_offsets = {0}; // wrong size
+
+    EXPECT_THROW(
+        applyBpGapsGlobal(
+            flat_bp_coverage, {BpGap{0, ForwardRange{0, 1}}}, nid2flat_idx, component_offsets,
+            idx2bp, idx2bp_offsets, component_bp_offsets
+        ),
+        std::invalid_argument
+    );
+}

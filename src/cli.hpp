@@ -1,6 +1,8 @@
 #ifndef CDX_COVERAGE_CLI_HPP
 #define CDX_COVERAGE_CLI_HPP
 
+#include "coverage_precision.h"
+
 #include <cstddef>
 #include <cstdint>
 #include <optional>
@@ -35,6 +37,13 @@ struct CliArgs {
     // Component Query Selection
     std::optional<QuerySelection> query;
     ComponentType component_type = ComponentType::Linear;
+
+    // Coverage computation granularity. Defaults to Base (full base-pair
+    // precision, including deletion/soft-clip corrections) since that is
+    // the more accurate result; -p/--coverage-precision node opts back into
+    // the cheaper, node-only behaviour for memory-constrained machines or
+    // very large/deep GAM files. See coverage_precision.h for the tradeoff.
+    CoveragePrecision coverage_precision = CoveragePrecision::Base;
 
     // CDX Inspection Mode
     InspectOptions inspect;

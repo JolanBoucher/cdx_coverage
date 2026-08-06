@@ -18,6 +18,7 @@
 #pragma once
 
 #include "cdx_types.h"
+#include "coverage_precision.h"
 
 #include <cstddef>
 #include <cstdint>
@@ -86,6 +87,10 @@ namespace output {
     * @param mapping_stats Read-mapping statistics associated with the query.
     * @param coverage Per-position coverage values for the query component.
     * @param component_name Name of the query component being reported.
+    * @param precision Coverage computation granularity used to produce @p coverage,
+    *        recorded in the report header for reproducibility. Defaults to
+    *        `CoveragePrecision::Node` so existing callers that omit this
+    *        parameter keep compiling unchanged.
     *
     * @throws std::invalid_argument If the mapping statistics are internally inconsistent.
     * @throws std::runtime_error If the report file cannot be opened.
@@ -94,7 +99,8 @@ namespace output {
         const std::filesystem::path &output_path,
         const GamMappingStats &mapping_stats,
         const std::vector<cdx::Coverage> &coverage,
-        const std::string &component_name
+        const std::string &component_name,
+        CoveragePrecision precision = CoveragePrecision::Node
     );
 
     /**
@@ -121,6 +127,10 @@ namespace output {
      * @param component_names Names associated with each component interval.
      * @param mapping_stats Read-mapping statistics to include in the report.
      * @param threads Number of worker threads to use when OpenMP is enabled.
+     * @param precision Coverage computation granularity used to produce @p coverage,
+     *        recorded in the report header for reproducibility. Defaults to
+     *        `CoveragePrecision::Node` so existing callers that omit this
+     *        parameter keep compiling unchanged.
      *
      * @throws std::invalid_argument If component boundaries or component names
      *         are inconsistent with the coverage table.
@@ -132,6 +142,7 @@ namespace output {
         const std::vector<cdx::PosBp> &component_offsets,
         const std::vector<std::string> &component_names,
         const GamMappingStats &mapping_stats,
-        int threads
+        int threads,
+        CoveragePrecision precision = CoveragePrecision::Node
     );
 } // namespace output

@@ -20,6 +20,8 @@
 
 #include "../src/gam_io.h"
 #include "../src/config.h"
+#include "../src/coverage_gaps.h"
+#include "../src/coverage_precision.h"
 #include "cdx_types.h"
 
 #include <vg/vg.pb.h>
@@ -27,6 +29,7 @@
 
 #include <gtest/gtest.h>
 
+#include <algorithm>
 #include <cstdint>
 #include <filesystem>
 #include <fstream>
@@ -85,6 +88,99 @@ namespace {
     private:
         std::filesystem::path path_;
     };
+
+    // -------------------------------------------------------------------
+    // Base-precision fixtures: unlike GamFileFixture above (which only sets
+    // node_id, everything else defaulted), the CoveragePrecision::Base tests
+    // below need full control over Position::offset/is_reverse and each
+    // mapping's Edit list, so alignments are built directly with the real
+    // Protobuf setters and handed in ready-made.
+    // -------------------------------------------------------------------
+
+    /** @brief Same on-disk fixture mechanics as GamFileFixture, but takes fully-built Alignments. */
+    class DetailedGamFileFixture {
+    public:
+        explicit DetailedGamFileFixture(const std::vector<vg::Alignment> &alignments) {
+            static int counter = 0;
+            path_ = std::filesystem::temp_directory_path() /
+                    ("gam_io_test_detailed_" + std::to_string(++counter) + ".gam");
+
+            std::ofstream out(path_, std::ios::binary);
+            {
+                vg::io::ProtobufEmitter<vg::Alignment> emitter(out, false);
+                for (const vg::Alignment &alignment: alignments) {
+                    vg::Alignment copy = alignment;
+                    emitter.write(std::move(copy));
+                }
+            }
+        }
+
+        ~DetailedGamFileFixture() {
+            std::error_code ec;
+            std::filesystem::remove(path_, ec);
+        }
+
+        DetailedGamFileFixture(const DetailedGamFileFixture &) = delete;
+
+        DetailedGamFileFixture &operator=(const DetailedGamFileFixture &) = delete;
+
+        [[nodiscard]] const std::filesystem::path &path() const { return path_; }
+
+    private:
+        std::filesystem::path path_;
+    };
+
+    /** @brief Appends a mapping (node_id/offset/is_reverse) to a Path and returns it for edit-building. */
+    vg::Mapping *addMapping(
+        vg::Path &path,
+        const std::int64_t node_id,
+        const std::int64_t offset = 0,
+        const bool is_reverse = false
+    ) {
+        vg::Mapping *mapping = path.add_mapping();
+        mapping->mutable_position()->set_node_id(node_id);
+        mapping->mutable_position()->set_offset(offset);
+        mapping->mutable_position()->set_is_reverse(is_reverse);
+        return mapping;
+    }
+
+    /** @brief Appends a match edit (from_length == to_length, no sequence) - edit_is_match(). */
+    void addMatchEdit(vg::Mapping &mapping, const std::int32_t length) {
+        vg::Edit *edit = mapping.add_edit();
+        edit->set_from_length(length);
+        edit->set_to_length(length);
+    }
+
+    /** @brief Appends a deletion edit (from_length > 0, to_length == 0) - edit_is_deletion(). */
+    void addDeletionEdit(vg::Mapping &mapping, const std::int32_t length) {
+        vg::Edit *edit = mapping.add_edit();
+        edit->set_from_length(length);
+        edit->set_to_length(0);
+    }
+
+    /** @brief Appends an insertion edit (from_length == 0, to_length > 0) - edit_is_insertion(). */
+    void addInsertionEdit(vg::Mapping &mapping, const std::int32_t length) {
+        vg::Edit *edit = mapping.add_edit();
+        edit->set_from_length(0);
+        edit->set_to_length(length);
+        edit->set_sequence(std::string(static_cast<std::size_t>(length), 'A'));
+    }
+
+    /** @brief Appends a substitution/mismatch edit (from_length == to_length, non-empty sequence) - edit_is_sub(). */
+    void addSubstitutionEdit(vg::Mapping &mapping, const std::int32_t length) {
+        vg::Edit *edit = mapping.add_edit();
+        edit->set_from_length(length);
+        edit->set_to_length(length);
+        edit->set_sequence(std::string(static_cast<std::size_t>(length), 'A'));
+    }
+
+    /** @brief Finds the (single) gap for a given nid_offset, or nullptr if none was recorded. */
+    const BpGap *findGap(const std::vector<BpGap> &gaps, const cdx::Nid nid_offset) {
+        const auto it = std::find_if(gaps.begin(), gaps.end(), [nid_offset](const BpGap &g) {
+            return g.nid_offset == nid_offset;
+        });
+        return it == gaps.end() ? nullptr : &*it;
+    }
 } // anonymous namespace
 
 // =============================================================================
@@ -368,5 +464,253 @@ namespace {
         EXPECT_EQ(stats_single.unmapped, stats_multi.unmapped);
         EXPECT_EQ(stats_single.mapped_to_query, stats_multi.mapped_to_query);
         EXPECT_EQ(stats_single.total, 200u);
+    }
+} // anonymous namespace
+
+// =============================================================================
+// CoveragePrecision::Base - argument validation.
+//
+// node_lengths/out_gaps are only meaningful (and required) in Base mode; in
+// Node mode (the default, exercised by every test above) they are ignored
+// entirely, which is what lets Node-mode callers skip building them.
+// =============================================================================
+namespace {
+    TEST(GamIoBasePrecisionValidationTest, MissingNodeLengthsThrows) {
+        std::vector<cdx::Coverage> target(1, 0);
+        std::vector<BpGap> gaps;
+
+        EXPECT_THROW(
+            process_gam(kUnusedPath.string(), target, 0, 100, 1, 1, CoveragePrecision::Base, nullptr, &gaps),
+            std::invalid_argument
+        );
+    }
+
+    TEST(GamIoBasePrecisionValidationTest, MissingOutGapsThrows) {
+        std::vector<cdx::Coverage> target(1, 0);
+        std::vector<cdx::SeqLen> node_lengths(1, 10);
+
+        EXPECT_THROW(
+            process_gam(kUnusedPath.string(), target, 0, 100, 1, 1, CoveragePrecision::Base, &node_lengths, nullptr),
+            std::invalid_argument
+        );
+    }
+
+    TEST(GamIoBasePrecisionValidationTest, NodeLengthsSizeMismatchThrows) {
+        std::vector<cdx::Coverage> target(3, 0);
+        std::vector<cdx::SeqLen> node_lengths(2, 10); // wrong size vs. target
+        std::vector<BpGap> gaps;
+
+        EXPECT_THROW(
+            process_gam(kUnusedPath.string(), target, 0, 100, 1, 1, CoveragePrecision::Base, &node_lengths, &gaps),
+            std::invalid_argument
+        );
+    }
+} // anonymous namespace
+
+// =============================================================================
+// CoveragePrecision::Base - gap detection.
+//
+// Fixed setup used throughout: nid_min = 100 (so node 100 is nid_offset 0),
+// a single node of length 10bp unless noted otherwise.
+// =============================================================================
+namespace {
+    constexpr cdx::Nid kBaseNidMin = 100;
+
+    // A deletion in the middle of an otherwise full-length mapping produces
+    // exactly one gap, spanning just the deleted bases.
+    TEST(GamIoBasePrecisionGapTest, MiddleDeletionProducesExactGap) {
+        vg::Alignment alignment;
+        vg::Mapping *mapping = addMapping(*alignment.mutable_path(), kBaseNidMin, 0, false);
+        addMatchEdit(*mapping, 3);
+        addDeletionEdit(*mapping, 2);
+        addMatchEdit(*mapping, 5); // 3+2+5 = 10 = full node length -> no boundary gap
+
+        const DetailedGamFileFixture fixture({alignment});
+        std::vector<cdx::Coverage> target(1, 0);
+        std::vector<cdx::SeqLen> node_lengths(1, 10);
+        std::vector<BpGap> gaps;
+
+        process_gam(fixture.path().string(), target, kBaseNidMin, 100, 1, 1, CoveragePrecision::Base, &node_lengths, &gaps);
+
+        EXPECT_EQ(target[0], 1u); // node-level credit unaffected
+        ASSERT_EQ(gaps.size(), 1u);
+        EXPECT_EQ(gaps[0].nid_offset, 0u);
+        EXPECT_EQ(gaps[0].range.start, 3u);
+        EXPECT_EQ(gaps[0].range.end, 5u);
+    }
+
+    // Matches and mismatches/substitutions never produce gaps: this tool
+    // reports raw read depth, not concordance with the reference (see the
+    // discussion this feature was designed from).
+    TEST(GamIoBasePrecisionGapTest, SubstitutionsAndMatchesProduceNoGaps) {
+        vg::Alignment alignment;
+        vg::Mapping *mapping = addMapping(*alignment.mutable_path(), kBaseNidMin, 0, false);
+        addMatchEdit(*mapping, 4);
+        addSubstitutionEdit(*mapping, 2);
+        addMatchEdit(*mapping, 4); // 4+2+4 = 10 = full node length
+
+        const DetailedGamFileFixture fixture({alignment});
+        std::vector<cdx::Coverage> target(1, 0);
+        std::vector<cdx::SeqLen> node_lengths(1, 10);
+        std::vector<BpGap> gaps;
+
+        process_gam(fixture.path().string(), target, kBaseNidMin, 100, 1, 1, CoveragePrecision::Base, &node_lengths, &gaps);
+
+        EXPECT_EQ(target[0], 1u);
+        EXPECT_TRUE(gaps.empty());
+    }
+
+    // An insertion consumes no "from" (node) length at all, so it can never
+    // produce a gap either - there is no node position to subtract from.
+    TEST(GamIoBasePrecisionGapTest, InsertionProducesNoGap) {
+        vg::Alignment alignment;
+        vg::Mapping *mapping = addMapping(*alignment.mutable_path(), kBaseNidMin, 0, false);
+        addMatchEdit(*mapping, 5);
+        addInsertionEdit(*mapping, 3); // consumes 0 "from" length
+        addMatchEdit(*mapping, 5); // 5+0+5 = 10 = full node length
+
+        const DetailedGamFileFixture fixture({alignment});
+        std::vector<cdx::Coverage> target(1, 0);
+        std::vector<cdx::SeqLen> node_lengths(1, 10);
+        std::vector<BpGap> gaps;
+
+        process_gam(fixture.path().string(), target, kBaseNidMin, 100, 1, 1, CoveragePrecision::Base, &node_lengths, &gaps);
+
+        EXPECT_EQ(target[0], 1u);
+        EXPECT_TRUE(gaps.empty());
+    }
+
+    // A single-mapping read that starts partway through its node (offset >
+    // 0) and whose edits fall short of the node's far end produces two
+    // boundary gaps: one before the walk starts, one after it ends.
+    TEST(GamIoBasePrecisionGapTest, PartialSingleMappingProducesLeadingAndTrailingGaps) {
+        vg::Alignment alignment;
+        vg::Mapping *mapping = addMapping(*alignment.mutable_path(), kBaseNidMin, 3, false);
+        addMatchEdit(*mapping, 5); // walk covers forward [3, 8) out of a 10bp node
+
+        const DetailedGamFileFixture fixture({alignment});
+        std::vector<cdx::Coverage> target(1, 0);
+        std::vector<cdx::SeqLen> node_lengths(1, 10);
+        std::vector<BpGap> gaps;
+
+        process_gam(fixture.path().string(), target, kBaseNidMin, 100, 1, 1, CoveragePrecision::Base, &node_lengths, &gaps);
+
+        EXPECT_EQ(target[0], 1u);
+        ASSERT_EQ(gaps.size(), 2u);
+
+        // Order isn't guaranteed (thread-local lists are concatenated), so
+        // find each gap by its range instead of assuming positions [0]/[1].
+        const bool has_leading = std::any_of(gaps.begin(), gaps.end(), [](const BpGap &g) {
+            return g.range.start == 0 && g.range.end == 3;
+        });
+        const bool has_trailing = std::any_of(gaps.begin(), gaps.end(), [](const BpGap &g) {
+            return g.range.start == 8 && g.range.end == 10;
+        });
+        EXPECT_TRUE(has_leading);
+        EXPECT_TRUE(has_trailing);
+    }
+
+    // Reverse-strand mappings must mirror gap positions relative to the
+    // node's forward orientation, not reuse the forward-strand walk order
+    // directly - this is the main correctness risk in the whole feature.
+    TEST(GamIoBasePrecisionGapTest, ReverseStrandDeletionIsMirrored) {
+        vg::Alignment alignment;
+        // is_reverse, offset=0: walk starts at forward position 9, moving down.
+        vg::Mapping *mapping = addMapping(*alignment.mutable_path(), kBaseNidMin, 0, true);
+        addMatchEdit(*mapping, 4); // walk positions [0,4) -> forward [6,10)
+        addDeletionEdit(*mapping, 1); // walk positions [4,5) -> forward [5,6)
+        addMatchEdit(*mapping, 5); // walk positions [5,10) -> forward [0,5)
+
+        const DetailedGamFileFixture fixture({alignment});
+        std::vector<cdx::Coverage> target(1, 0);
+        std::vector<cdx::SeqLen> node_lengths(1, 10);
+        std::vector<BpGap> gaps;
+
+        process_gam(fixture.path().string(), target, kBaseNidMin, 100, 1, 1, CoveragePrecision::Base, &node_lengths, &gaps);
+
+        ASSERT_EQ(gaps.size(), 1u);
+        EXPECT_EQ(gaps[0].range.start, 5u);
+        EXPECT_EQ(gaps[0].range.end, 6u);
+    }
+
+    // In a multi-node path, only the first and last mapping can produce
+    // boundary gaps - an internal mapping always walks its node edge to
+    // edge, by construction of how aligners emit paths.
+    TEST(GamIoBasePrecisionGapTest, OnlyFirstAndLastMappingCanHaveBoundaryGaps) {
+        vg::Alignment alignment;
+        vg::Path &path = *alignment.mutable_path();
+
+        // First node: starts at offset 2 (leading gap [0,2)).
+        vg::Mapping *first = addMapping(path, kBaseNidMin, 2, false);
+        addMatchEdit(*first, 8); // covers [2,10) of a 10bp node
+
+        // Middle node: always offset 0, full length, no gap possible.
+        vg::Mapping *middle = addMapping(path, kBaseNidMin + 1, 0, false);
+        addMatchEdit(*middle, 10);
+
+        // Last node: full offset 0 but only consumes 6 of 10bp (trailing gap [6,10)).
+        vg::Mapping *last = addMapping(path, kBaseNidMin + 2, 0, false);
+        addMatchEdit(*last, 6);
+
+        const DetailedGamFileFixture fixture({alignment});
+        std::vector<cdx::Coverage> target(3, 0);
+        std::vector<cdx::SeqLen> node_lengths = {10, 10, 10};
+        std::vector<BpGap> gaps;
+
+        process_gam(fixture.path().string(), target, kBaseNidMin, 100, 1, 1, CoveragePrecision::Base, &node_lengths, &gaps);
+
+        EXPECT_EQ(target, (std::vector<cdx::Coverage>{1, 1, 1}));
+
+        EXPECT_EQ(findGap(gaps, 1), nullptr) << "middle node must never have a gap";
+
+        const BpGap *first_gap = findGap(gaps, 0);
+        ASSERT_NE(first_gap, nullptr);
+        EXPECT_EQ(first_gap->range.start, 0u);
+        EXPECT_EQ(first_gap->range.end, 2u);
+
+        const BpGap *last_gap = findGap(gaps, 2);
+        ASSERT_NE(last_gap, nullptr);
+        EXPECT_EQ(last_gap->range.start, 6u);
+        EXPECT_EQ(last_gap->range.end, 10u);
+    }
+
+    // A node excluded from the active query (NOT_IN_QUERY sentinel) never
+    // reaches gap detection at all, even if its mapping carries a deletion -
+    // the same gating process_gam already applies to the coverage increment.
+    TEST(GamIoBasePrecisionGapTest, NodeOutsideActiveQueryProducesNoGap) {
+        vg::Alignment alignment;
+        vg::Mapping *mapping = addMapping(*alignment.mutable_path(), kBaseNidMin, 0, false);
+        addDeletionEdit(*mapping, 5);
+        addMatchEdit(*mapping, 5);
+
+        const DetailedGamFileFixture fixture({alignment});
+        std::vector<cdx::Coverage> target = {cfg::NOT_IN_QUERY};
+        std::vector<cdx::SeqLen> node_lengths(1, 10);
+        std::vector<BpGap> gaps;
+
+        process_gam(fixture.path().string(), target, kBaseNidMin, 100, 1, 1, CoveragePrecision::Base, &node_lengths, &gaps);
+
+        EXPECT_TRUE(gaps.empty());
+    }
+
+    // Node mode (the default used throughout this file) must ignore Edit
+    // data entirely: a deletion in the fixture has zero effect on the
+    // node-level result, matching plain node-presence counting.
+    TEST(GamIoBasePrecisionGapTest, NodeModeIgnoresEditsEvenWhenPresent) {
+        vg::Alignment alignment;
+        vg::Mapping *mapping = addMapping(*alignment.mutable_path(), kBaseNidMin, 3, true);
+        addDeletionEdit(*mapping, 4);
+
+        const DetailedGamFileFixture fixture({alignment});
+        std::vector<cdx::Coverage> target(1, 0);
+
+        // Explicit CoveragePrecision::Node with null node_lengths/out_gaps -
+        // exactly what a Node-mode caller does, must not throw or crash
+        // despite the fixture carrying real edit/offset/strand data.
+        const GamMappingStats stats =
+                process_gam(fixture.path().string(), target, kBaseNidMin, 100, 1, 1, CoveragePrecision::Node);
+
+        EXPECT_EQ(stats.mapped_to_query, 1u);
+        EXPECT_EQ(target[0], 1u);
     }
 } // anonymous namespace

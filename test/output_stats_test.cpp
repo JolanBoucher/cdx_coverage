@@ -334,6 +334,34 @@ TEST(WriteStatsReportQueryTest, ReportContainsComponentNameAndSections) {
     removeIfExists(path);
 }
 
+// The default precision parameter (CoveragePrecision::Node, kept for
+// backward compatibility with pre-existing callers/tests) is recorded as
+// "node" in the report header.
+TEST(WriteStatsReportQueryTest, DefaultPrecisionLabelledNode) {
+    const GamMappingStats stats{10, 8, 5, 2};
+    const std::vector<cdx::Coverage> coverage = {1, 2, 3};
+    const auto path = tempReportPath("default_precision_label");
+
+    output::writeStatsReportQuery(path, stats, coverage, "chr1");
+    const std::string content = readFile(path);
+
+    EXPECT_NE(content.find("Coverage precision: node"), std::string::npos);
+    removeIfExists(path);
+}
+
+// An explicit CoveragePrecision::Base is recorded as "base" instead.
+TEST(WriteStatsReportQueryTest, ExplicitBasePrecisionLabelledBase) {
+    const GamMappingStats stats{10, 8, 5, 2};
+    const std::vector<cdx::Coverage> coverage = {1, 2, 3};
+    const auto path = tempReportPath("explicit_base_precision_label");
+
+    output::writeStatsReportQuery(path, stats, coverage, "chr1", CoveragePrecision::Base);
+    const std::string content = readFile(path);
+
+    EXPECT_NE(content.find("Coverage precision: base"), std::string::npos);
+    removeIfExists(path);
+}
+
 // =============================================================================
 // writeStatsReportGlobal
 //
@@ -465,4 +493,23 @@ TEST(WriteStatsReportGlobalTest, MixedDenseAndFallbackComponentsProducesSaneRepo
     EXPECT_EQ(content.find("nan"), std::string::npos);
     EXPECT_EQ(content.find("inf"), std::string::npos);
     removeIfExists(path);
+}
+
+// Same precision-label check as WriteStatsReportQueryTest above, exercising
+// the trailing defaulted parameter and an explicit override.
+TEST(WriteStatsReportGlobalTest, PrecisionLabelDefaultsToNodeAndHonoursOverride) {
+    const std::vector<cdx::Coverage> coverage = {1, 2, 3, 4, 5};
+    const std::vector<cdx::PosBp> offsets = {0, 5};
+    const std::vector<std::string> names = {"chr1"};
+    const GamMappingStats stats{10, 8, 5, 2};
+
+    const auto default_path = tempReportPath("global_default_precision_label");
+    output::writeStatsReportGlobal(default_path, coverage, offsets, names, stats, 1);
+    EXPECT_NE(readFile(default_path).find("Coverage precision: node"), std::string::npos);
+    removeIfExists(default_path);
+
+    const auto base_path = tempReportPath("global_explicit_base_precision_label");
+    output::writeStatsReportGlobal(base_path, coverage, offsets, names, stats, 1, CoveragePrecision::Base);
+    EXPECT_NE(readFile(base_path).find("Coverage precision: base"), std::string::npos);
+    removeIfExists(base_path);
 }
